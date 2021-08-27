@@ -1,12 +1,13 @@
 {
-  "name": "@rudderstack/rudder-sdk-node",
-  "version": "1.0.3",
-  "description": "Rudder Node SDK",
-  "license": "",
-  "repository": "rudderlabs/rudder-sdk-node",
-  "author": {
-    "name": ""
+  "name": "@expo/rudder-sdk-node",
+  "version": "1.0.8",
+  "description": "Compact fork of rudder-node-sdk",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/expo/rudder-sdk-node.git"
   },
+  "author": "Expo",
   "engines": {
     "node": ">=4"
   },
@@ -19,7 +20,7 @@
   "scripts": {
     "dependencies": "yarn",
     "size": "size-limit",
-    "build": "babel index.js --out-dir lib && cp package.json lib/ && cp readme.md lib/ && cp History.md lib/ && cp LICENSE.md lib/",
+    "build": "babel index.js --out-dir lib && cp package.json lib/ && cp readme.md lib/ && cp History.md lib/ && cp LICENSE.md lib/ && cp index.d.ts lib/",
     "test": "nyc --reporter=lcov --reporter=html --reporter=text ava --serial --verbose  > coverage.lcov",
     "lint": "eslint . --fix",
     "changelog": "auto-changelog -p -t keepachangelog -u true -l false --sort-commits date-desc ",
