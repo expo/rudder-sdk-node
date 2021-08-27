@@ -2,8 +2,7 @@ const assert = require("assert");
 const removeSlash = require("remove-trailing-slash");
 const looselyValidate = require("@segment/loosely-validate-event");
 const serialize = require("serialize-javascript");
-const axios = require("axios");
-const axiosRetry = require("axios-retry");
+const fetch = require("@adobe/node-fetch-retry");
 const ms = require("ms");
 const uuid = require("uuid/v4");
 const md5 = require("md5");
@@ -65,8 +64,6 @@ class Analytics {
       ),
       transports: [new winston.transports.Console()],
     });
-
-    axiosRetry(axios, { retries: 0 });
   }
 
   _validate(message, type) {
@@ -358,23 +355,22 @@ class Analytics {
       callback(err, data);
     };
 
-    // Don't set the user agent if we're not on a browser. The latest spec allows
-    // the User-Agent header (see https://fetch.spec.whatwg.org/#terminology-headers
-    // and https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest/setRequestHeader),
-    // but browsers such as Chrome and Safari have not caught up.
-    const headers = {};
-    if (typeof window === "undefined") {
-      headers["user-agent"] = `analytics-node/${version}`;
-    }
-
     const req = {
       method: "POST",
-      url: `${this.host}`,
-      auth: {
-        username: this.writeKey,
+      body: JSON.stringify(data),
+      headers: {
+        "User-Agent":
+          typeof window === "undefined"
+            ? `analytics-node/${version}`
+            : undefined,
+        Authorization:
+          "Basic " + Buffer.from(`${this.writeKey}:`).toString("base64"),
       },
-      data,
-      headers,
+      retryOptions: {
+        retryMaxDuration: 1500,
+        retryInitialDelay: 500,
+        retryBackoff: 1.0
+      }
     };
 
     if (this.timeout) {
@@ -382,14 +378,7 @@ class Analytics {
         typeof this.timeout === "string" ? ms(this.timeout) : this.timeout;
     }
 
-    axios({
-      ...req,
-      "axios-retry": {
-        retries: 3,
-        retryCondition: this._isErrorRetryable.bind(this),
-        retryDelay: axiosRetry.exponentialDelay
-      }
-    })
+    fetch(`${this.host}`, req)
       .then((response) => {
         this.queue.splice(0, items.length);
         this.timer = setTimeout(this.flush.bind(this), this.flushInterval);
@@ -411,31 +400,6 @@ class Analytics {
         }
         done(err);
       });
-  }
-
-  _isErrorRetryable(error) {
-    // Retry Network Errors.
-    if (axiosRetry.isNetworkError(error)) {
-      return true;
-    }
-
-    if (!error.response) {
-      // Cannot determine if the request can be retried
-      return false;
-    }
-
-    this.logger.error("error status: " + error.response.status);
-    // Retry Server Errors (5xx).
-    if (error.response.status >= 500 && error.response.status <= 599) {
-      return true;
-    }
-
-    // Retry if rate limited.
-    if (error.response.status === 429) {
-      return true;
-    }
-
-    return false;
   }
 }
 
