@@ -32,7 +32,6 @@
   ],
   "dependencies": {
     "@segment/loosely-validate-event": "^2.0.0",
-    "auto-changelog": "^1.16.2",
     "axios": "^0.21.1",
     "axios-retry": "^3.0.2",
     "bull": "^3.20.0",
@@ -45,6 +44,7 @@
     "winston": "^3.3.3"
   },
   "devDependencies": {
+    "auto-changelog": "^1.16.2",
     "ava": "^0.25.0",
     "babel-cli": "^6.26.0",
     "babel-core": "^6.26.3",
