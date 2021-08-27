@@ -8,13 +8,9 @@ const ms = require("ms");
 const uuid = require("uuid/v4");
 const md5 = require("md5");
 const isString = require("lodash.isstring");
+const bunyan = require("@expo/bunyan");
+
 const version = require("./package.json").version;
-const winston = require("winston");
-const logFormat = winston.format.printf(
-  ({ level, message, label, timestamp }) => {
-    return `${timestamp} [${label}] ${level}: ${message}`;
-  }
-);
 
 const setImmediate = global.setImmediate || process.nextTick.bind(process);
 const noop = () => {};
@@ -56,14 +52,9 @@ class Analytics {
       value: typeof options.enable === "boolean" ? options.enable : true,
     });
 
-    this.logger = winston.createLogger({
+    this.logger = bunyan.createLogger({
+      name: "@expo/rudder-node-sdk",
       level: this.logLevel,
-      format: winston.format.combine(
-        winston.format.label({ label: "Rudder" }),
-        winston.format.timestamp(),
-        logFormat
-      ),
-      transports: [new winston.transports.Console()],
     });
 
     axiosRetry(axios, { retries: 0 });
@@ -349,7 +340,7 @@ class Analytics {
       sentAt: new Date(),
     };
     this.logger.debug("batch size is " + items.length);
-    this.logger.silly("===data===", data);
+    this.logger.trace("===data===", data);
 
     const done = (err) => {
       callbacks.forEach((callback_) => {
