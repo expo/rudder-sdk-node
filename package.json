@@ -31,6 +31,7 @@
     "analytics"
   ],
   "dependencies": {
+    "@expo/bunyan": "^4.0.0",
     "@segment/loosely-validate-event": "^2.0.0",
     "axios": "^0.21.1",
     "axios-retry": "^3.0.2",
@@ -39,8 +40,7 @@
     "ms": "^2.0.0",
     "remove-trailing-slash": "^0.1.0",
     "serialize-javascript": "^5.0.1",
-    "uuid": "^3.2.1",
-    "winston": "^3.3.3"
+    "uuid": "^3.2.1"
   },
   "devDependencies": {
     "auto-changelog": "^1.16.2",

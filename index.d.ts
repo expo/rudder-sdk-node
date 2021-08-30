@@ -21,9 +21,9 @@ declare class Analytics {
     flushAt: number;
     flushInterval: any;
     maxInternalQueueSize: any;
-    logLevel: any;
+    logLevel: bunyan.LogLevel;
     flushed: boolean;
-    logger: winston.Logger;
+    logger: bunyan;
     _validate(message: any, type: any): void;
     /**
      * Send an identify `message`.
@@ -167,4 +167,4 @@ declare class Analytics {
     timer: NodeJS.Timeout;
     _isErrorRetryable(error: any): boolean;
 }
-import winston = require("winston");
+import bunyan = require("@expo/bunyan");
