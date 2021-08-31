@@ -1,17 +1,17 @@
-const assert = require("assert");
-const removeSlash = require("remove-trailing-slash");
-const looselyValidate = require("@segment/loosely-validate-event");
-const serialize = require("serialize-javascript");
-const axios = require("axios");
-const axiosRetry = require("axios-retry");
-const ms = require("ms");
-const { v4: uuid } = require("uuid");
-const md5 = require("md5");
-const isString = require("lodash.isstring");
-const bunyan = require("@expo/bunyan");
+const assert = require('assert');
+const removeSlash = require('remove-trailing-slash');
+const looselyValidate = require('@segment/loosely-validate-event');
+const fetch = require('node-fetch');
+const fetchRetry = require('fetch-retry');
+const ms = require('ms');
+const { v4: uuid } = require('uuid');
+const md5 = require('md5');
+const isString = require('lodash.isstring');
+const bunyan = require('@expo/bunyan');
 
-const version = require("./package.json").version;
+const version = require('./package.json').version;
 
+const retryableFetch = fetchRetry(fetch);
 const setImmediate = global.setImmediate || process.nextTick.bind(process);
 const noop = () => {};
 
@@ -33,40 +33,38 @@ class Analytics {
     options = options || {};
 
     assert(writeKey, "You must pass your project's write key.");
-    assert(dataPlaneURL, "You must pass your data plane url.");
+    assert(dataPlaneURL, 'You must pass your data plane url.');
 
     this.queue = [];
-    this.state = "idle";
+    this.state = 'idle';
     this.writeKey = writeKey;
     this.host = removeSlash(dataPlaneURL);
     this.timeout = options.timeout || false;
     this.flushAt = Math.max(options.flushAt, 1) || 20;
     this.flushInterval = options.flushInterval || 20000;
     this.maxInternalQueueSize = options.maxInternalQueueSize || 20000;
-    this.logLevel = options.logLevel || "info";
+    this.logLevel = options.logLevel || 'fatal';
     this.flushed = false;
-    Object.defineProperty(this, "enable", {
+    Object.defineProperty(this, 'enable', {
       configurable: false,
       writable: false,
       enumerable: true,
-      value: typeof options.enable === "boolean" ? options.enable : true,
+      value: typeof options.enable === 'boolean' ? options.enable : true,
     });
 
     this.logger = bunyan.createLogger({
-      name: "@expo/rudder-node-sdk",
+      name: '@expo/rudder-node-sdk',
       level: this.logLevel,
     });
-
-    axiosRetry(axios, { retries: 0 });
   }
 
   _validate(message, type) {
     try {
       looselyValidate(message, type);
     } catch (e) {
-      if (e.message === "Your message must be < 32kb.") {
+      if (e.message === 'Your message must be < 32kb.') {
         this.logger.info(
-          "Your message must be < 32kb. This is currently surfaced as a warning. Please update your code",
+          'Your message must be < 32kb. This is currently surfaced as a warning. Please update your code',
           message
         );
         return;
@@ -90,8 +88,8 @@ class Analytics {
    */
 
   identify(message, callback) {
-    this._validate(message, "identify");
-    this.enqueue("identify", message, callback);
+    this._validate(message, 'identify');
+    this.enqueue('identify', message, callback);
     return this;
   }
 
@@ -111,8 +109,8 @@ class Analytics {
    */
 
   group(message, callback) {
-    this._validate(message, "group");
-    this.enqueue("group", message, callback);
+    this._validate(message, 'group');
+    this.enqueue('group', message, callback);
     return this;
   }
 
@@ -132,8 +130,8 @@ class Analytics {
    */
 
   track(message, callback) {
-    this._validate(message, "track");
-    this.enqueue("track", message, callback);
+    this._validate(message, 'track');
+    this.enqueue('track', message, callback);
     return this;
   }
 
@@ -153,8 +151,8 @@ class Analytics {
    */
 
   page(message, callback) {
-    this._validate(message, "page");
-    this.enqueue("page", message, callback);
+    this._validate(message, 'page');
+    this.enqueue('page', message, callback);
     return this;
   }
 
@@ -167,8 +165,8 @@ class Analytics {
    */
 
   screen(message, callback) {
-    this._validate(message, "screen");
-    this.enqueue("screen", message, callback);
+    this._validate(message, 'screen');
+    this.enqueue('screen', message, callback);
     return this;
   }
 
@@ -188,8 +186,8 @@ class Analytics {
    */
 
   alias(message, callback) {
-    this._validate(message, "alias");
-    this.enqueue("alias", message, callback);
+    this._validate(message, 'alias');
+    this.enqueue('alias', message, callback);
     return this;
   }
 
@@ -206,9 +204,9 @@ class Analytics {
   enqueue(type, message, callback) {
     if (this.queue.length >= this.maxInternalQueueSize) {
       this.logger.error(
-        "not adding events for processing as queue size " +
+        'not adding events for processing as queue size ' +
           this.queue.length +
-          " >= than max configuration " +
+          ' >= than max configuration ' +
           this.maxInternalQueueSize
       );
       return;
@@ -219,7 +217,7 @@ class Analytics {
       return setImmediate(callback);
     }
 
-    if (type == "identify") {
+    if (type == 'identify') {
       if (message.traits) {
         if (!message.context) {
           message.context = {};
@@ -233,7 +231,7 @@ class Analytics {
 
     message.context = {
       library: {
-        name: "analytics-node",
+        name: '@expo/rudder-node-sdk',
         version,
       },
       ...message.context,
@@ -275,12 +273,12 @@ class Analytics {
     }
 
     if (this.queue.length >= this.flushAt) {
-      this.logger.debug("flushAt reached, trying flush...");
+      this.logger.debug('flushAt reached, trying flush...');
       this.flush();
     }
 
     if (this.flushInterval && !this.flushTimer) {
-      this.logger.debug("no existing flush timer, creating new one");
+      this.logger.debug('no existing flush timer, creating new one');
       this.flushTimer = setTimeout(this.flush.bind(this), this.flushInterval);
     }
   }
@@ -294,34 +292,34 @@ class Analytics {
 
   flush(callback) {
     // check if earlier flush was pushed to queue
-    this.logger.debug("in flush");
-    if (this.state == "running") {
-      this.logger.debug("skipping flush, earlier flush in progress");
+    this.logger.debug('in flush');
+    if (this.state == 'running') {
+      this.logger.debug('skipping flush, earlier flush in progress');
       return;
     }
-    this.state = "running";
+    this.state = 'running';
     callback = callback || noop;
 
     if (!this.enable) {
-      this.state = "idle";
+      this.state = 'idle';
       return setImmediate(callback);
     }
 
     if (this.timer) {
-      this.logger.debug("cancelling existing timer...");
+      this.logger.debug('cancelling existing timer...');
       clearTimeout(this.timer);
       this.timer = null;
     }
 
     if (this.flushTimer) {
-      this.logger.debug("cancelling existing flushTimer...");
+      this.logger.debug('cancelling existing flushTimer...');
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
     }
 
     if (!this.queue.length) {
-      this.logger.debug("queue is empty, nothing to flush");
-      this.state = "idle";
+      this.logger.debug('queue is empty, nothing to flush');
+      this.state = 'idle';
       return setImmediate(callback);
     }
 
@@ -329,7 +327,7 @@ class Analytics {
     const callbacks = items.map((item) => item.callback);
     const messages = items.map((item) => {
       // if someone mangles directly with queue
-      if (typeof item.message == "object") {
+      if (typeof item.message == 'object') {
         item.message.sentAt = new Date();
       }
       return item.message;
@@ -339,8 +337,8 @@ class Analytics {
       batch: messages,
       sentAt: new Date(),
     };
-    this.logger.debug("batch size is " + items.length);
-    this.logger.trace("===data===", data);
+    this.logger.debug('batch size is ' + items.length);
+    this.logger.trace('===data===', data);
 
     const done = (err) => {
       callbacks.forEach((callback_) => {
@@ -349,53 +347,46 @@ class Analytics {
       callback(err, data);
     };
 
-    // Don't set the user agent if we're not on a browser. The latest spec allows
-    // the User-Agent header (see https://fetch.spec.whatwg.org/#terminology-headers
-    // and https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest/setRequestHeader),
-    // but browsers such as Chrome and Safari have not caught up.
-    const headers = {};
-    if (typeof window === "undefined") {
-      headers["user-agent"] = `analytics-node/${version}`;
-    }
-
     const req = {
-      method: "POST",
-      url: `${this.host}`,
-      auth: {
-        username: this.writeKey,
+      method: 'POST',
+      headers: {
+        // Don't set the user agent if we're not on a browser. The latest spec allows
+        // the User-Agent header (see https://fetch.spec.whatwg.org/#terminology-headers
+        // and https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest/setRequestHeader),
+        // but browsers such as Chrome and Safari have not caught up.
+        'User-Agent':
+          typeof window === 'undefined'
+            ? `analytics-node/${version}`
+            : undefined,
+        Authorization:
+          'Basic ' + Buffer.from(`${this.writeKey}:`).toString('base64'),
       },
-      data,
-      headers,
+      body: JSON.stringify(data),
+      retryDelay: this._exponentialDelay.bind(this),
+      retryOn: this._isErrorRetryable.bind(this),
     };
 
     if (this.timeout) {
       req.timeout =
-        typeof this.timeout === "string" ? ms(this.timeout) : this.timeout;
+        typeof this.timeout === 'string' ? ms(this.timeout) : this.timeout;
     }
 
-    axios({
-      ...req,
-      "axios-retry": {
-        retries: 3,
-        retryCondition: this._isErrorRetryable.bind(this),
-        retryDelay: axiosRetry.exponentialDelay
-      }
-    })
+    retryableFetch(`${this.host}`, req)
       .then((response) => {
         this.queue.splice(0, items.length);
         this.timer = setTimeout(this.flush.bind(this), this.flushInterval);
-        this.state = "idle";
+        this.state = 'idle';
         done();
       })
       .catch((err) => {
         this.logger.error(
-          "got error while attempting send for 3 times, dropping " +
+          'request failed to send after 3 retries, dropping ' +
             items.length +
-            " events"
+            ' events'
         );
         this.queue.splice(0, items.length);
         this.timer = setTimeout(this.flush.bind(this), this.flushInterval);
-        this.state = "idle";
+        this.state = 'idle';
         if (err.response) {
           const error = new Error(err.response.statusText);
           return done(error);
@@ -404,29 +395,33 @@ class Analytics {
       });
   }
 
-  _isErrorRetryable(error) {
-    // Retry Network Errors.
-    if (axiosRetry.isNetworkError(error)) {
-      return true;
-    }
+  _exponentialDelay(attempt, error, response) {
+    const delay = Math.pow(2, attempt + 1) * 200;
+    const randomSum = delay * 0.2 * Math.random(); // 0-20% of the delay
+    return delay + randomSum;
+  }
 
-    if (!error.response) {
-      // Cannot determine if the request can be retried
+  _isErrorRetryable(attempt, error, response) {
+    // 3 retries max
+    if (attempt > 2) {
       return false;
     }
 
-    this.logger.error("error status: " + error.response.status);
-    // Retry Server Errors (5xx).
-    if (error.response.status >= 500 && error.response.status <= 599) {
+    // retry on any network error
+    if (error !== null) {
       return true;
     }
-
-    // Retry if rate limited.
-    if (error.response.status === 429) {
+    // retry on 5xx status codes
+    else if (response.status >= 500 && response.status <= 599) {
       return true;
     }
-
-    return false;
+    // Retry if rate limited
+    else if (response.status === 429) {
+      return true;
+    // All other cases, do not retry
+    } else {
+      return false;
+    }
   }
 }
 
