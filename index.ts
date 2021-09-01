@@ -380,7 +380,9 @@ class Analytics {
         // the User-Agent header (see https://fetch.spec.whatwg.org/#terminology-headers
         // and https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest/setRequestHeader),
         // but browsers such as Chrome and Safari have not caught up.
-        ...(typeof window === 'undefined' ? { 'User-Agent': `analytics-node/${version}` } : null),
+        ...(typeof window === 'undefined'
+          ? { 'User-Agent': `expo-rudder-sdk-node/${version}` }
+          : null),
         Authorization: 'Basic ' + Buffer.from(`${this.writeKey}:`).toString('base64'),
       },
       body: JSON.stringify(data),
