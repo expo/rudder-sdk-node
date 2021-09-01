@@ -9,7 +9,7 @@
   },
   "author": "Expo",
   "engines": {
-    "node": ">=4"
+    "node": ">=12"
   },
   "size-limit": [
     {
