@@ -2,7 +2,7 @@
 
 const program = require('commander');
 
-const Analytics = require('.');
+const Analytics = require('.').default;
 const pkg = require('./package');
 
 const toObject = (str) => JSON.parse(str);

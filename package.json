@@ -27,6 +27,12 @@
     "changelog": "auto-changelog -p -t keepachangelog -u true -l false --sort-commits date-desc "
   },
   "main": "index.js",
+  "files": [
+    "cli.js",
+    "index.d.ts",
+    "index.js",
+    "index.ts"
+  ],
   "keywords": [
     "analytics"
   ],
