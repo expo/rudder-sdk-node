@@ -1,18 +1,13 @@
 {
-    // Change this to match your project
-    "include": ["index.js"],
-    "extends": "@tsconfig/node14/tsconfig.json",
+    "include": ["index.ts"],
+    "extends": "@tsconfig/node12/tsconfig.json",
     "compilerOptions": {
-      "allowJs": true,
-      // Generate d.ts files
       "declaration": true,
-      // This compiler run should
-      // only output d.ts files
-      "emitDeclarationOnly": true,
       "noUnusedLocals": true,
       "noUnusedParameters": true,
       "noImplicitAny": false,
       "noImplicitReturns": true,
-      "noFallthroughCasesInSwitch": true
+      "noFallthroughCasesInSwitch": true,
+      "useUnknownInCatchVariables": false
     },
 }

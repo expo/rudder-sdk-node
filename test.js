@@ -12,7 +12,7 @@ const noop = () => {};
 
 const context = {
   library: {
-    name: "analytics-node",
+    name: "@expo/rudder-node-sdk",
     version
   }
 };
@@ -81,7 +81,7 @@ test("create a queue", t => {
 });
 
 test("default options", t => {
-  t.throws(() => new Analytics("key"), "You must pass your data plane url.");
+  t.throws(() => new Analytics("key"), "You must pass your data plane URL.");
 });
 
 test("remove trailing slashes from `host`", t => {
@@ -90,7 +90,7 @@ test("remove trailing slashes from `host`", t => {
   t.is(client.host, "http://google.com");
   t.is(client.writeKey, "key");
   t.is(client.flushAt, 20);
-  t.is(client.flushInterval, 10000);
+  t.is(client.flushInterval, 20000);
 });
 
 test("overwrite defaults with options", t => {
