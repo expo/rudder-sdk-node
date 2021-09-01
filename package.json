@@ -2,7 +2,7 @@
   "name": "@expo/rudder-sdk-node",
   "version": "1.0.8",
   "description": "Compact fork of rudder-node-sdk",
-  "license": "ISC",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/expo/rudder-sdk-node.git"
