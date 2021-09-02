@@ -72,7 +72,7 @@ test('expose a constructor', (t) => {
 });
 
 test('require a write key', (t) => {
-  t.throws(() => new Analytics(), "You must pass your project's write key.");
+  t.throws(() => new Analytics(), "The project's write key must be specified");
 });
 
 test('create a queue', (t) => {
@@ -82,7 +82,7 @@ test('create a queue', (t) => {
 });
 
 test('default options', (t) => {
-  t.throws(() => new Analytics('key'), 'You must pass your data plane URL.');
+  t.throws(() => new Analytics('key'), 'The data plane URL must be specified');
 });
 
 test('remove trailing slashes from `host`', (t) => {
@@ -533,18 +533,18 @@ test('alias - require previousId and userId', (t) => {
 test('isErrorRetryable', (t) => {
   const client = createClient();
 
-  t.false(client._isErrorRetryable({}));
+  t.false(client.isErrorRetryable({}));
 
   // ETIMEDOUT is retryable as per `is-retry-allowed` (used by axios-retry in `isNetworkError`).
-  t.true(client._isErrorRetryable({ code: 'ETIMEDOUT' }));
+  t.true(client.isErrorRetryable({ code: 'ETIMEDOUT' }));
 
   // ECONNABORTED is not retryable as per `is-retry-allowed` (used by axios-retry in `isNetworkError`).
-  t.false(client._isErrorRetryable({ code: 'ECONNABORTED' }));
+  t.false(client.isErrorRetryable({ code: 'ECONNABORTED' }));
 
-  t.true(client._isErrorRetryable({ response: { status: 500 } }));
-  t.true(client._isErrorRetryable({ response: { status: 429 } }));
+  t.true(client.isErrorRetryable({ response: { status: 500 } }));
+  t.true(client.isErrorRetryable({ response: { status: 429 } }));
 
-  t.false(client._isErrorRetryable({ response: { status: 200 } }));
+  t.false(client.isErrorRetryable({ response: { status: 200 } }));
 });
 
 test('allows messages > 32kb', (t) => {

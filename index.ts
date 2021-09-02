@@ -5,7 +5,7 @@ import fetchRetry from 'fetch-retry';
 import isString from 'lodash.isstring';
 import md5 from 'md5';
 import ms from 'ms';
-import fetch from 'node-fetch';
+import fetch, { Response } from 'node-fetch';
 import removeTrailingSlash from 'remove-trailing-slash';
 import { v4 as uuid } from 'uuid';
 
@@ -13,33 +13,56 @@ const version = require('./package.json').version;
 
 const retryableFetch = fetchRetry(fetch as any) as unknown as typeof fetch;
 const setImmediate = global.setImmediate || process.nextTick.bind(process);
-const noop = () => {};
 
-enum AnalyticsState {
+export type AnalyticsMessage = AnalyticsIdentity & {
+  context?: { [key: string]: unknown };
+  traits?: { [key: string]: unknown };
+  integrations?: { [destination: string]: boolean };
+  timestamp?: Date;
+  [key: string]: unknown;
+};
+
+export type AnalyticsIdentity =
+  | { userId: string | number }
+  | { userId?: string | number; anonymousId: string };
+
+export type AnalyticsMessageCallback = (error?: Error) => void;
+
+export type AnalyticsFlushCallback = (
+  error?: Error,
+  data?: { batch: AnalyticsPayload[]; sentAt: Date }
+) => void;
+
+type AnalyticsPayload = any;
+
+type AnalyticsEventType = 'identify' | 'track' | 'page' | 'screen' | 'group' | 'alias';
+
+const enum AnalyticsState {
   Idle = 'idle',
   Running = 'running',
 }
 
-type AnalyticsMessage = any;
-
-class Analytics {
+export default class Analytics {
   private readonly enable: boolean;
-  private state = AnalyticsState.Idle;
-  private queue = [] as {
-    message: AnalyticsMessage;
-    callback: (error?: Error, data?: { batch: AnalyticsMessage[]; sentAt: Date }) => void;
-  }[];
-  private writeKey: string;
-  private host: string;
-  private timeout: number | null;
-  private flushAt: number;
-  private flushInterval: number;
-  private maxInternalQueueSize: number;
-  private flushed: boolean = false;
-  private flushTimer: NodeJS.Timer | null = null;
-  private timer: NodeJS.Timer | null = null;
 
-  private logger: bunyan;
+  private state = AnalyticsState.Idle;
+  private readonly queue = [] as {
+    message: AnalyticsPayload;
+    callback: AnalyticsMessageCallback;
+  }[];
+
+  private readonly writeKey: string;
+  private readonly host: string;
+  private readonly timeout: number | string;
+
+  private readonly flushAt: number;
+  private readonly flushInterval: number;
+  private readonly maxInternalQueueSize: number;
+  private flushed: boolean = false;
+  private timer: NodeJS.Timer | null = null;
+  private flushTimer: NodeJS.Timer | null = null;
+
+  private readonly logger: bunyan;
 
   /**
    * Initialize a new `Analytics` instance with your RudderStack project's `writeKey` and an
@@ -57,20 +80,22 @@ class Analytics {
       logLevel = bunyan.FATAL,
     }: {
       enable?: boolean;
-      timeout?: number;
+      timeout?: number | string;
       flushAt?: number;
       flushInterval?: number;
       maxInternalQueueSize?: number;
       logLevel?: bunyan.LogLevel;
     } = {}
   ) {
-    assert(writeKey, `You must pass your project's write key.`);
-    assert(dataPlaneURL, `You must pass your data plane URL.`);
+    this.enable = enable;
+
+    assert(writeKey, `The project's write key must be specified`);
+    assert(dataPlaneURL, `The data plane URL must be specified`);
 
     this.writeKey = writeKey;
     this.host = removeTrailingSlash(dataPlaneURL);
-    this.enable = enable;
     this.timeout = timeout;
+
     this.flushAt = Math.max(flushAt, 1);
     this.flushInterval = flushInterval;
     this.maxInternalQueueSize = maxInternalQueueSize;
@@ -81,13 +106,80 @@ class Analytics {
     });
   }
 
-  _validate(message, type) {
+  /**
+   * Sends an "identify" message that associates traits with a user.
+   */
+  identify(message: AnalyticsMessage, callback?: AnalyticsMessageCallback): Analytics {
+    this.validate(message, 'identify');
+    this.enqueue('identify', message, callback);
+    return this;
+  }
+
+  /**
+   * Sends a "group" message that identifies this user with a group.
+   */
+  group(
+    message: AnalyticsMessage & { groupId: string },
+    callback?: AnalyticsMessageCallback
+  ): Analytics {
+    this.validate(message, 'group');
+    this.enqueue('group', message, callback);
+    return this;
+  }
+
+  /**
+   * Sends a "track" event that records an action.
+   */
+  track(
+    message: AnalyticsMessage & { event: string },
+    callback?: AnalyticsMessageCallback
+  ): Analytics {
+    this.validate(message, 'track');
+    this.enqueue('track', message, callback);
+    return this;
+  }
+
+  /**
+   * Sends a "page" event that records a page view on a website.
+   */
+  page(
+    message: AnalyticsMessage & { name: string },
+    callback?: AnalyticsMessageCallback
+  ): Analytics {
+    this.validate(message, 'page');
+    this.enqueue('page', message, callback);
+    return this;
+  }
+
+  /**
+   * Sends a "screen" event that records a screen view in an app.
+   */
+
+  screen(message: AnalyticsMessage, callback?: AnalyticsMessageCallback): Analytics {
+    this.validate(message, 'screen');
+    this.enqueue('screen', message, callback);
+    return this;
+  }
+
+  /**
+   * Sends an "alias" message that associates one ID with another.
+   */
+  alias(
+    message: { previousId: string } & AnalyticsIdentity,
+    callback?: AnalyticsMessageCallback
+  ): Analytics {
+    this.validate(message, 'alias');
+    this.enqueue('alias', message, callback);
+    return this;
+  }
+
+  private validate(message: Partial<AnalyticsMessage>, type: AnalyticsEventType): void {
     try {
       looselyValidate(message, type);
     } catch (e) {
       if (e.message === 'Your message must be < 32kb.') {
         this.logger.info(
-          'Your message must be < 32kb. This is currently surfaced as a warning. Please update your code',
+          'Your message must be < 32KiB. This is currently surfaced as a warning. Please update your code.',
           message
         );
         return;
@@ -97,144 +189,19 @@ class Analytics {
   }
 
   /**
-   * Send an identify `message`.
-   *
-   * @param {Object} message
-   * @param {String=} message.userId (optional)
-   * @param {String=} message.anonymousId (optional)
-   * @param {Object=} message.context (optional)
-   * @param {Object=} message.traits (optional)
-   * @param {Object=} message.integrations (optional)
-   * @param {Date=} message.timestamp (optional)
-   * @param {Function=} callback (optional)
-   * @return {Analytics}
+   * Adds a message of the specified type to the queue and flushes the queue if appropriate.
    */
-
-  identify(message, callback) {
-    this._validate(message, 'identify');
-    this.enqueue('identify', message, callback);
-    return this;
-  }
-
-  /**
-   * Send a group `message`.
-   *
-   * @param {Object} message
-   * @param {String} message.groupId
-   * @param {String=} message.userId (optional)
-   * @param {String=} message.anonymousId (optional)
-   * @param {Object=} message.context (optional)
-   * @param {Object=} message.traits (optional)
-   * @param {Object=} message.integrations (optional)
-   * @param {Date=} message.timestamp (optional)
-   * @param {Function=} callback (optional)
-   * @return {Analytics}
-   */
-
-  group(message, callback) {
-    this._validate(message, 'group');
-    this.enqueue('group', message, callback);
-    return this;
-  }
-
-  /**
-   * Send a track `message`.
-   *
-   * @param {Object} message
-   * @param {String} message.event
-   * @param {String=} message.userId (optional)
-   * @param {String=} message.anonymousId (optional)
-   * @param {Object=} message.context (optional)
-   * @param {Object=} message.properties (optional)
-   * @param {Object=} message.integrations (optional)
-   * @param {Date=} message.timestamp (optional)
-   * @param {Function=} callback (optional)
-   * @return {Analytics}
-   */
-
-  track(message, callback) {
-    this._validate(message, 'track');
-    this.enqueue('track', message, callback);
-    return this;
-  }
-
-  /**
-   * Send a page `message`.
-   *
-   * @param {Object} message
-   * @param {String} message.name
-   * @param {String=} message.userId (optional)
-   * @param {String=} message.anonymousId (optional)
-   * @param {Object=} message.context (optional)
-   * @param {Object=} message.properties (optional)
-   * @param {Object=} message.integrations (optional)
-   * @param {Date=} message.timestamp (optional)
-   * @param {Function=} callback (optional)
-   * @return {Analytics}
-   */
-
-  page(message, callback) {
-    this._validate(message, 'page');
-    this.enqueue('page', message, callback);
-    return this;
-  }
-
-  /**
-   * Send a screen `message`.
-   *
-   * @param {Object} message
-   * @param {Function} fn (optional)
-   * @return {Analytics}
-   */
-
-  screen(message, callback) {
-    this._validate(message, 'screen');
-    this.enqueue('screen', message, callback);
-    return this;
-  }
-
-  /**
-   * Send an alias `message`.
-   *
-   * @param {Object} message
-   * @param {String} message.previousId
-   * @param {String=} message.userId (optional)
-   * @param {String=} message.anonymousId (optional)
-   * @param {Object=} message.context (optional)
-   * @param {Object=} message.properties (optional)
-   * @param {Object=} message.integrations (optional)
-   * @param {Date=} message.timestamp (optional)
-   * @param {Function=} callback (optional)
-   * @return {Analytics}
-   */
-
-  alias(message, callback) {
-    this._validate(message, 'alias');
-    this.enqueue('alias', message, callback);
-    return this;
-  }
-
-  /**
-   * Add a `message` of type `type` to the queue and
-   * check whether it should be flushed.
-   *
-   * @param {String} type
-   * @param {Object} message
-   * @param {Function} [callback] (optional)
-   * @api private
-   */
-
-  enqueue(type, message, callback): void {
+  private enqueue(
+    type: AnalyticsEventType,
+    message: any,
+    callback: AnalyticsMessageCallback = () => {}
+  ): void {
     if (this.queue.length >= this.maxInternalQueueSize) {
       this.logger.error(
-        'not adding events for processing as queue size ' +
-          this.queue.length +
-          ' >= than max configuration ' +
-          this.maxInternalQueueSize
+        `Not adding events for processing as queue size ${this.queue.length} exceeds max configuration ${this.maxInternalQueueSize}`
       );
       return;
     }
-    callback = callback || noop;
 
     if (!this.enable) {
       setImmediate(callback);
@@ -308,13 +275,9 @@ class Analytics {
   }
 
   /**
-   * Flush the current queue
-   *
-   * @param {Function} [callback] (optional)
-   * @return {Analytics}
+   * Flushes the message queue to the server immediately if a flush is not already in progress.
    */
-
-  flush(callback?) {
+  flush(callback: AnalyticsFlushCallback = () => {}): void {
     // check if earlier flush was pushed to queue
     this.logger.debug('in flush');
     if (this.state === AnalyticsState.Running) {
@@ -322,7 +285,6 @@ class Analytics {
       return;
     }
     this.state = AnalyticsState.Running;
-    callback = callback || noop;
 
     if (!this.enable) {
       this.state = AnalyticsState.Idle;
@@ -366,7 +328,7 @@ class Analytics {
     this.logger.debug('batch size is ' + items.length);
     this.logger.trace('===data===', data);
 
-    const done = (err?) => {
+    const done = (err?: Error) => {
       callbacks.forEach((callback_) => {
         callback_(err);
       });
@@ -386,8 +348,8 @@ class Analytics {
         Authorization: 'Basic ' + Buffer.from(`${this.writeKey}:`).toString('base64'),
       },
       body: JSON.stringify(data),
-      retryDelay: this._exponentialDelay.bind(this),
-      retryOn: this._isErrorRetryable.bind(this),
+      retryDelay: this.getExponentialDelay.bind(this),
+      retryOn: this.isErrorRetryable.bind(this),
     };
 
     if (this.timeout) {
@@ -417,34 +379,39 @@ class Analytics {
       });
   }
 
-  _exponentialDelay(attempt, _error, _response) {
-    const delay = Math.pow(2, attempt + 1) * 200;
-    const randomSum = delay * 0.2 * Math.random(); // 0-20% of the delay
-    return delay + randomSum;
+  /**
+   * Calculates the amount of time to wait before retrying a request, given the number of prior
+   * retries (excluding the initial attempt).
+   *
+   * @param priorRetryCount the number of prior retries, starting from zero
+   */
+  private getExponentialDelay(priorRetryCount: number): number {
+    const delay = 2 ** priorRetryCount * 200;
+    const jitter = delay * 0.2 * Math.random(); // 0-20% of the delay
+    return delay + jitter;
   }
 
-  _isErrorRetryable(attempt, error, response) {
+  /**
+   * Returns whether to retry a request that failed with the given error or returned the given
+   * response.
+   */
+  private isErrorRetryable(
+    priorRetryCount: number,
+    error: Error | null,
+    response: Response
+  ): boolean {
     // 3 retries max
-    if (attempt > 2) {
+    if (priorRetryCount > 2) {
       return false;
     }
 
-    // retry on any network error
-    if (error !== null) {
-      return true;
-    }
-    // retry on 5xx status codes
-    else if (response.status >= 500 && response.status <= 599) {
-      return true;
-    }
-    // Retry if rate limited
-    else if (response.status === 429) {
-      return true;
-      // All other cases, do not retry
-    } else {
-      return false;
-    }
+    return (
+      // Retry on any network error
+      !!error ||
+      // Retry if rate limited
+      response.status === 429 ||
+      // Retry on 5xx status codes due to server errors
+      (response.status >= 500 && response.status <= 599)
+    );
   }
 }
-
-export = Analytics;
