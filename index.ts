@@ -22,7 +22,9 @@ export type AnalyticsMessage = AnalyticsIdentity & {
   [key: string]: unknown;
 };
 
-export type AnalyticsIdentity = { userId: string } | { anonymousId: string };
+export type AnalyticsIdentity =
+  | { userId: string | number }
+  | { userId?: string | number; anonymousId: string };
 
 export type AnalyticsMessageCallback = (error?: Error) => void;
 
@@ -51,7 +53,7 @@ export default class Analytics {
 
   private readonly writeKey: string;
   private readonly host: string;
-  private readonly timeout: number | string | null;
+  private readonly timeout: number | string;
 
   private readonly flushAt: number;
   private readonly flushInterval: number;
