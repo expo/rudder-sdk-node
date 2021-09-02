@@ -241,7 +241,7 @@ class Analytics {
       return;
     }
 
-    if (type == 'identify') {
+    if (type === 'identify') {
       if (message.traits) {
         if (!message.context) {
           message.context = {};
@@ -317,7 +317,7 @@ class Analytics {
   flush(callback?) {
     // check if earlier flush was pushed to queue
     this.logger.debug('in flush');
-    if (this.state == AnalyticsState.Running) {
+    if (this.state === AnalyticsState.Running) {
       this.logger.debug('skipping flush, earlier flush in progress');
       return;
     }
