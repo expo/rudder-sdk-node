@@ -2,7 +2,6 @@ import bunyan from '@expo/bunyan';
 import looselyValidate from '@segment/loosely-validate-event';
 import assert from 'assert';
 import fetchRetry from 'fetch-retry';
-import isString from 'lodash.isstring';
 import md5 from 'md5';
 import fetch, { Response } from 'node-fetch';
 import removeTrailingSlash from 'remove-trailing-slash';
@@ -21,9 +20,7 @@ export type AnalyticsMessage = AnalyticsIdentity & {
   [key: string]: unknown;
 };
 
-export type AnalyticsIdentity =
-  | { userId: string | number }
-  | { userId?: string | number; anonymousId: string };
+export type AnalyticsIdentity = { userId: string } | { userId?: string; anonymousId: string };
 
 export type AnalyticsMessageCallback = (error?: Error) => void;
 
@@ -244,16 +241,6 @@ export default class Analytics {
       // which is not a great source of randomness.
       // Borrowed from analytics.js (https://github.com/segment-integrations/analytics.js-integration-segmentio/blob/a20d2a2d222aeb3ab2a8c7e72280f1df2618440e/lib/index.js#L255-L256).
       message.messageId = `node-${md5(JSON.stringify(message))}-${uuid()}`;
-    }
-
-    // Historically this library has accepted strings and numbers as IDs.
-    // However, our spec only allows strings. To avoid breaking compatibility,
-    // we'll coerce these to strings if they aren't already.
-    if (message.anonymousId && !isString(message.anonymousId)) {
-      message.anonymousId = JSON.stringify(message.anonymousId);
-    }
-    if (message.userId && !isString(message.userId)) {
-      message.userId = JSON.stringify(message.userId);
     }
 
     this.queue.push({ message, callback });

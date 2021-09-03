@@ -135,67 +135,6 @@ test('enqueue - add a message to the queue', (t) => {
   });
 });
 
-test('enqueue - stringify userId', (t) => {
-  const client = createClient();
-
-  client.track(
-    {
-      userId: 10,
-      event: 'event',
-    },
-    noop
-  );
-
-  t.is(client.queue.length, 1);
-
-  const item = client.queue.pop();
-
-  t.is(item.message.anonymousId, undefined);
-  t.is(item.message.userId, '10');
-});
-
-test('enqueue - stringify anonymousId', (t) => {
-  const client = createClient();
-
-  client.screen(
-    {
-      anonymousId: 157963456373623802,
-      name: 'screen name',
-    },
-    noop
-  );
-
-  t.is(client.queue.length, 1);
-
-  const item = client.queue.pop();
-
-  t.is(item.message.userId, undefined);
-  // v8 will lose precision for big numbers.
-  t.is(item.message.anonymousId, '157963456373623800');
-});
-
-test('enqueue - stringify ids handles strings', (t) => {
-  const client = createClient();
-
-  client.screen(
-    {
-      anonymousId: '15796345',
-      // We're explicitly testing the behaviour of the library if a customer
-      // uses a String constructor.
-      userId: new String('prateek'), // eslint-disable-line no-new-wrappers
-      name: 'screen name',
-    },
-    noop
-  );
-
-  t.is(client.queue.length, 1);
-
-  const item = client.queue.pop();
-
-  t.is(item.message.anonymousId, '15796345');
-  t.is(item.message.userId.toString(), 'prateek');
-});
-
 test("enqueue - don't modify the original message", (t) => {
   const client = createClient();
   const message = { event: 'test' };
@@ -425,7 +364,7 @@ test('track - enqueue a message', (t) => {
   stub(client, 'enqueue');
 
   const message = {
-    userId: 1,
+    userId: '1',
     event: 'event',
   };
 
