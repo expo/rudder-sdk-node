@@ -1,7 +1,18 @@
-node_modules
-coverage
-.nyc_output
-coverage.lcov
+# macOS
+.DS_Store
+
+# Editors
+*~
+/.vscode/
+
+# Node
+/node_modules/
+
+# Coverage
+/.nyc_output/
+/coverage/
+/coverage.lcov
+
+# Built files
 /index.d.ts
 /index.js
-
