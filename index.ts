@@ -330,16 +330,10 @@ export default class Analytics {
     const req = {
       method: 'POST',
       headers: {
-        Accept: 'application/json, text/plain, */*',
-        'Content-Type': 'application/json;charset=utf-8',
-        // Don't set the user agent if we're not on a browser. The latest spec allows
-        // the User-Agent header (see https://fetch.spec.whatwg.org/#terminology-headers
-        // and https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest/setRequestHeader),
-        // but browsers such as Chrome and Safari have not caught up.
-        ...(typeof window === 'undefined'
-          ? { 'user-agent': `expo-rudder-sdk-node/${version}` }
-          : null),
-        Authorization: 'Basic ' + Buffer.from(`${this.writeKey}:`).toString('base64'),
+        accept: 'application/json, text/plain, */*',
+        'content-type': 'application/json;charset=utf-8',
+        'user-agent': `expo-rudder-sdk-node/${version}`,
+        authorization: 'Basic ' + Buffer.from(`${this.writeKey}:`).toString('base64'),
       },
       body: JSON.stringify(data),
       timeout: this.timeout > 0 ? this.timeout : undefined,

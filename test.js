@@ -45,7 +45,7 @@ test.before.cb((t) => {
         });
       }
 
-      const ua = req.headers['user-agent'];
+      const ua = req.get('user-agent');
       if (ua !== `expo-rudder-sdk-node/${version}`) {
         return res.status(400).json({
           error: { message: 'invalid user-agent' },
