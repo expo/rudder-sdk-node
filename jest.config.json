@@ -1,0 +1,13 @@
+{
+  "clearMocks": true,
+  "collectCoverage": true,
+  "coverageDirectory": "<rootDir>/coverage",
+  "globals": {
+    "ts-jest": {
+      "diagnostics": false
+    }
+  },
+  "transform": {
+    "^.+\\.ts$": "ts-jest"
+  }
+}
