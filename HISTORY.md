@@ -8,6 +8,12 @@ Unpublished
 * Changed the logger from `winston` to `bunyan` (specifically, `@expo/bunyan`)
 * Changed the default log level from INFO to FATAL
 * The `timeout` option must be a number (milliseconds). Strings are no longer supported. As before, 0 means no timeout but now negative numbers also disable timeouts.
+* Changed how flushing works. Removes `flushTimer`, `AnalyticsState`. Flushing will only occur when
+    * the first time an event is enqueued after instantiation (occurs immediately)
+    * when the event queue size reaches the `flushAt` number (occurs immediately)
+    * when a new event is enqueued after a flush (a timer is set for flush to occur after `flushInterval` ms)
+* Changed how fetch is handled
+    * All network errors are retried
 
 ### Minor changes
 
@@ -15,6 +21,7 @@ Unpublished
 * Replaced `axios` with `node-fetch`
 * The library name in the log context object is now `@expo/rudder-sdk-node`
 * The user agent string is now `expo-rudder-sdk-node/<version>`
+* Events are now removed from the event queue prior to sending a network request, rather than after
 
 v1.0.8
 ==========================

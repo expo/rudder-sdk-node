@@ -36,15 +36,9 @@ type AnalyticsPayload = any;
 
 type AnalyticsEventType = 'identify' | 'track' | 'page' | 'screen' | 'group' | 'alias';
 
-const enum AnalyticsState {
-  Idle = 'idle',
-  Running = 'running',
-}
-
 export default class Analytics {
   private readonly enable: boolean;
 
-  private state = AnalyticsState.Idle;
   private readonly queue = [] as {
     message: AnalyticsPayload;
     callback: AnalyticsMessageCallback;
@@ -59,7 +53,6 @@ export default class Analytics {
   private readonly maxInternalQueueSize: number;
   private flushed: boolean = false;
   private timer: NodeJS.Timer | null = null;
-  private flushTimer: NodeJS.Timer | null = null;
 
   private readonly logger: bunyan;
 
@@ -230,7 +223,7 @@ export default class Analytics {
 
     message.context = {
       library: {
-        name: '@expo/rudder-node-sdk',
+        name: '@expo/rudder-sdk-node',
         version,
       },
       ...message.context,
@@ -271,14 +264,18 @@ export default class Analytics {
       return;
     }
 
-    if (this.queue.length >= this.flushAt) {
+    const hasReachedFlushAt = this.queue.length >= this.flushAt;
+    const hasReachedQueueSize =
+      this.queue.reduce((sum, item) => sum + JSON.stringify(item).length, 0) >=
+      this.maxInternalQueueSize;
+    if (hasReachedFlushAt || hasReachedQueueSize) {
       this.logger.debug('flushAt reached, trying flush...');
       this.flush();
     }
 
-    if (this.flushInterval && !this.flushTimer) {
+    if (this.flushInterval && !this.timer) {
       this.logger.debug('no existing flush timer, creating new one');
-      this.flushTimer = setTimeout(this.flush.bind(this), this.flushInterval);
+      this.timer = setTimeout(this.flush.bind(this), this.flushInterval);
     }
   }
 
@@ -288,14 +285,8 @@ export default class Analytics {
   flush(callback: AnalyticsFlushCallback = () => {}): void {
     // check if earlier flush was pushed to queue
     this.logger.debug('in flush');
-    if (this.state === AnalyticsState.Running) {
-      this.logger.debug('skipping flush, earlier flush in progress');
-      return;
-    }
-    this.state = AnalyticsState.Running;
 
     if (!this.enable) {
-      this.state = AnalyticsState.Idle;
       setImmediate(callback);
       return;
     }
@@ -306,20 +297,13 @@ export default class Analytics {
       this.timer = null;
     }
 
-    if (this.flushTimer) {
-      this.logger.debug('cancelling existing flushTimer...');
-      clearTimeout(this.flushTimer);
-      this.flushTimer = null;
-    }
-
     if (!this.queue.length) {
       this.logger.debug('queue is empty, nothing to flush');
-      this.state = AnalyticsState.Idle;
       setImmediate(callback);
       return;
     }
 
-    const items = this.queue.slice(0, this.flushAt);
+    const items = this.queue.splice(0, this.flushAt);
     const callbacks = items.map((item) => item.callback);
     const messages = items.map((item) => {
       // if someone mangles directly with queue
@@ -346,12 +330,14 @@ export default class Analytics {
     const req = {
       method: 'POST',
       headers: {
+        Accept: 'application/json, text/plain, */*',
+        'Content-Type': 'application/json;charset=utf-8',
         // Don't set the user agent if we're not on a browser. The latest spec allows
         // the User-Agent header (see https://fetch.spec.whatwg.org/#terminology-headers
         // and https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest/setRequestHeader),
         // but browsers such as Chrome and Safari have not caught up.
         ...(typeof window === 'undefined'
-          ? { 'User-Agent': `expo-rudder-sdk-node/${version}` }
+          ? { 'user-agent': `expo-rudder-sdk-node/${version}` }
           : null),
         Authorization: 'Basic ' + Buffer.from(`${this.writeKey}:`).toString('base64'),
       },
@@ -362,24 +348,24 @@ export default class Analytics {
     };
 
     retryableFetch(`${this.host}`, req)
-      .then((_response) => {
-        this.queue.splice(0, items.length);
-        this.timer = setTimeout(this.flush.bind(this), this.flushInterval);
-        this.state = AnalyticsState.Idle;
-        done();
+      .then((response) => {
+        if (response.ok) {
+          done();
+        } else {
+          // handle 4xx 5xx errors
+          this.logger.error(
+            'request failed to send after 3 retries, dropping ' + items.length + ' events'
+          );
+          const error = new Error(response.statusText);
+          done(error);
+        }
       })
-      .catch((err) => {
+      .catch((error) => {
+        // handle network errors
         this.logger.error(
           'request failed to send after 3 retries, dropping ' + items.length + ' events'
         );
-        this.queue.splice(0, items.length);
-        this.timer = setTimeout(this.flush.bind(this), this.flushInterval);
-        this.state = AnalyticsState.Idle;
-        if (err.response) {
-          const error = new Error(err.response.statusText);
-          return done(error);
-        }
-        done(err);
+        done(error);
       });
   }
 
