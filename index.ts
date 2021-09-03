@@ -81,7 +81,8 @@ export default class Analytics {
       enable?: boolean;
       /**
        * The network timeout (in milliseconds) for how long to wait for a request to complete when
-       * sending messages to the data plane. Specify 0 or a negative value to disable timeouts.
+       * sending messages to the data plane. Omit or specify 0 or a negative value to disable
+       * timeouts.
        */
       timeout?: number;
       flushAt?: number;
