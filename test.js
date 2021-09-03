@@ -300,21 +300,20 @@ test('flush - send messages', async (t) => {
   const callbackB = spy();
   const callbackC = spy();
 
-  client.queue = [];
   client.identify({ userId: 'id', traits: { traitOne: 'a1' } }, callbackA);
   client.page({ userId: 'id', category: 'category', name: 'b1' }, callbackB);
   client.track({ userId: 'id', event: 'c1' }, callbackC);
 
   const data = await client.flush();
+  await delay(5); // ensure the test context exists long enough for the second flush to occur
   t.deepEqual(Object.keys(data), ['batch', 'sentAt']);
   const keys = Object.keys(data.batch[0]);
   t.true(keys.includes('originalTimestamp'));
   t.true(keys.includes('sentAt'));
   t.true(data.sentAt instanceof Date);
-  // the below is erractic behaviour, need to check?
-  // t.true(callbackA.calledOnce)
-  // t.true(callbackB.calledOnce)
-  // t.true(callbackC.called)
+  t.true(callbackA.calledOnce);
+  t.true(callbackB.calledOnce);
+  t.true(callbackC.calledOnce);
 });
 
 test('flush - respond with an error', async (t) => {
