@@ -13,18 +13,19 @@ const noop = () => {};
 
 const context = {
   library: {
-    name: '@expo/rudder-node-sdk',
+    name: '@expo/rudder-sdk-node',
     version,
   },
 };
 
 const metadata = { nodeVersion: process.versions.node };
+const host = 'http://localhost';
 const port = 4063;
 
 const createClient = (options) => {
   options = { ...options };
 
-  const client = new Analytics('key', `http://localhost:${port}`, options);
+  const client = new Analytics('key', `${host}:${port}`, options);
   client.flush = pify(client.flush.bind(client));
   client.flushed = true;
 
@@ -45,7 +46,7 @@ test.before.cb((t) => {
       }
 
       const ua = req.headers['user-agent'];
-      if (ua !== `analytics-node/${version}`) {
+      if (ua !== `expo-rudder-sdk-node/${version}`) {
         return res.status(400).json({
           error: { message: 'invalid user-agent' },
         });
@@ -61,7 +62,6 @@ test.before.cb((t) => {
         return setTimeout(() => res.end(), 5000);
       }
 
-      // console.log('=== response===', JSON.stringify(req.body))
       res.json(req.body);
     })
     .listen(port, t.end);
@@ -342,7 +342,7 @@ test('flush - time out if configured', async (t) => {
     },
   ];
 
-  await t.throws(client.flush(), 'timeout of 500ms exceeded');
+  await t.throws(client.flush(), `network timeout at: ${host}:${port}/`);
 });
 
 test('flush - skip when client is disabled', async (t) => {
@@ -533,18 +533,18 @@ test('alias - require previousId and userId', (t) => {
 test('isErrorRetryable', (t) => {
   const client = createClient();
 
-  t.false(client.isErrorRetryable({}));
+  // test error cases
+  t.true(client.isErrorRetryable(0, {}, {}));
+  t.true(client.isErrorRetryable(0, { code: 'ETIMEDOUT' }, {}));
+  t.true(client.isErrorRetryable(0, { code: 'ECONNABORTED' }, {}));
 
-  // ETIMEDOUT is retryable as per `is-retry-allowed` (used by axios-retry in `isNetworkError`).
-  t.true(client.isErrorRetryable({ code: 'ETIMEDOUT' }));
-
-  // ECONNABORTED is not retryable as per `is-retry-allowed` (used by axios-retry in `isNetworkError`).
-  t.false(client.isErrorRetryable({ code: 'ECONNABORTED' }));
-
-  t.true(client.isErrorRetryable({ response: { status: 500 } }));
-  t.true(client.isErrorRetryable({ response: { status: 429 } }));
-
-  t.false(client.isErrorRetryable({ response: { status: 200 } }));
+  // test network request cases
+  t.true(client.isErrorRetryable(0, null, { status: 500 }));
+  t.true(client.isErrorRetryable(0, null, { status: 429 }));
+  // do not retry after 3 attempts
+  t.false(client.isErrorRetryable(3, null, { status: 429 }));
+  // do not retry on success
+  t.false(client.isErrorRetryable(0, null, { status: 200 }));
 });
 
 test('allows messages > 32kb', (t) => {
