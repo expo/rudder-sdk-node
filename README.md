@@ -1,4 +1,4 @@
-# `@expo/rudder-sdk-node`
+# `@expo/rudder-sdk-node` ![CI](https://github.com/expo/rudder-sdk-node/actions/workflows/ci.yml/badge.svg)
 
 A lightweight Node SDK for RudderStack with minimal dependencies. This is designed for client-side Node applications like CLIs. This library is smaller than [RudderStack's Node library](https://github.com/rudderlabs/rudder-sdk-node) and doesn't include support for the Redis persistence queue.
 
