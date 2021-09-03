@@ -44,8 +44,7 @@
     "md5": "^2.2.1",
     "node-fetch": "^2.6.1",
     "remove-trailing-slash": "^0.1.0",
-    "uuid": "^8.3.2",
-    "winston": "^3.3.3"
+    "uuid": "^8.3.2"
   },
   "devDependencies": {
     "@babel/core": "^7.15.0",
