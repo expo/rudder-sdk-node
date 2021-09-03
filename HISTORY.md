@@ -15,6 +15,7 @@ Unpublished
 * Changed how fetch is handled
     * All network errors are retried
 * No longer causes an exiting process to indefinitely stall due to a looping timer. If a process is naturally exiting (not due to `process.exit()`), you must call `analytics.flush()` to send the last events for them to be sent.
+* The `userId` and `anonymousId` message fields must be primitive strings. Other types like numbers are not supported.
 
 ### Minor changes
 
