@@ -7,6 +7,7 @@ Unpublished
 * Removed support for persisting events in Redis
 * Changed the logger from `winston` to `bunyan` (specifically, `@expo/bunyan`)
 * Changed the default log level from INFO to FATAL
+* The `timeout` option must be a number (milliseconds). Strings are no longer supported. As before, 0 means no timeout but now negative numbers also disable timeouts.
 
 ### Minor changes
 

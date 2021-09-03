@@ -4,7 +4,6 @@ import assert from 'assert';
 import fetchRetry from 'fetch-retry';
 import isString from 'lodash.isstring';
 import md5 from 'md5';
-import ms from 'ms';
 import fetch, { Response } from 'node-fetch';
 import removeTrailingSlash from 'remove-trailing-slash';
 import { v4 as uuid } from 'uuid';
@@ -53,7 +52,7 @@ export default class Analytics {
 
   private readonly writeKey: string;
   private readonly host: string;
-  private readonly timeout: number | string;
+  private readonly timeout: number;
 
   private readonly flushAt: number;
   private readonly flushInterval: number;
@@ -80,7 +79,12 @@ export default class Analytics {
       logLevel = bunyan.FATAL,
     }: {
       enable?: boolean;
-      timeout?: number | string;
+      /**
+       * The network timeout (in milliseconds) for how long to wait for a request to complete when
+       * sending messages to the data plane. Omit or specify 0 or a negative value to disable
+       * timeouts.
+       */
+      timeout?: number;
       flushAt?: number;
       flushInterval?: number;
       maxInternalQueueSize?: number;
@@ -348,14 +352,10 @@ export default class Analytics {
         Authorization: 'Basic ' + Buffer.from(`${this.writeKey}:`).toString('base64'),
       },
       body: JSON.stringify(data),
+      timeout: this.timeout > 0 ? this.timeout : undefined,
       retryDelay: this.getExponentialDelay.bind(this),
       retryOn: this.isErrorRetryable.bind(this),
     };
-
-    if (this.timeout) {
-      // @ts-expect-error Need to define timeout on the request object
-      req.timeout = typeof this.timeout === 'string' ? ms(this.timeout) : this.timeout;
-    }
 
     retryableFetch(`${this.host}`, req)
       .then((_response) => {
