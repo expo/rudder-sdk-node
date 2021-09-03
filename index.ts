@@ -15,8 +15,8 @@ const setImmediate = global.setImmediate || process.nextTick.bind(process);
 
 export type AnalyticsMessage = AnalyticsIdentity & {
   context?: { [key: string]: unknown };
-  traits?: { [key: string]: unknown };
   integrations?: { [destination: string]: boolean };
+  properties?: { [key: string]: unknown };
   timestamp?: Date;
   [key: string]: unknown;
 };
@@ -113,17 +113,21 @@ export default class Analytics {
   /**
    * Sends an "identify" message that associates traits with a user.
    */
-  identify(message: AnalyticsMessage, callback?: AnalyticsMessageCallback): Analytics {
+  identify(
+    message: AnalyticsMessage & { traits?: { [key: string]: unknown } },
+    callback?: AnalyticsMessageCallback
+  ): Analytics {
     this.validate(message, 'identify');
     this.enqueue('identify', message, callback);
     return this;
   }
+  traits?: { [key: string]: unknown };
 
   /**
    * Sends a "group" message that identifies this user with a group.
    */
   group(
-    message: AnalyticsMessage & { groupId: string },
+    message: AnalyticsMessage & { groupId: string; traits?: { [key: string]: unknown } },
     callback?: AnalyticsMessageCallback
   ): Analytics {
     this.validate(message, 'group');
@@ -169,7 +173,7 @@ export default class Analytics {
    * Sends an "alias" message that associates one ID with another.
    */
   alias(
-    message: { previousId: string } & AnalyticsIdentity,
+    message: { previousId: string; traits?: { [key: string]: unknown } } & AnalyticsIdentity,
     callback?: AnalyticsMessageCallback
   ): Analytics {
     this.validate(message, 'alias');
