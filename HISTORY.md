@@ -14,6 +14,7 @@ Unpublished
     * when a new event is enqueued after a flush (a timer is set for flush to occur after `flushInterval` ms)
 * Changed how fetch is handled
     * All network errors are retried
+* No longer causes an exiting process to indefinitely stall due to a looping timer. If a process is naturally exiting (not due to `process.exit()`), you must call `analytics.flush()` to send the last events for them to be sent.
 
 ### Minor changes
 
