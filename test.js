@@ -3,7 +3,6 @@ import auth from 'basic-auth';
 import bodyParser from 'body-parser';
 import delay from 'delay';
 import express from 'express';
-import pify from 'pify';
 import { spy, stub } from 'sinon';
 
 import Analytics from '.';
@@ -26,7 +25,6 @@ const createClient = (options) => {
   options = { ...options };
 
   const client = new Analytics('key', `${host}:${port}`, options);
-  client.flush = pify(client.flush.bind(client));
   client.flushed = true;
 
   return client;
@@ -243,13 +241,14 @@ test('flush - send messages', async (t) => {
   client.page({ userId: 'id', category: 'category', name: 'b1' }, callbackB);
   client.track({ userId: 'id', event: 'c1' }, callbackC);
 
-  const data = await client.flush();
+  const flushResponse = await client.flush();
   await delay(5); // ensure the test context exists long enough for the second flush to occur
-  t.deepEqual(Object.keys(data), ['batch', 'sentAt']);
-  const keys = Object.keys(data.batch[0]);
-  t.true(keys.includes('originalTimestamp'));
-  t.true(keys.includes('sentAt'));
-  t.true(data.sentAt instanceof Date);
+  t.deepEqual(Object.keys(flushResponse), ['data']);
+  const firstMessage = flushResponse.data.batch[0];
+  const firstMessageKeys = Object.keys(firstMessage);
+  t.true(firstMessageKeys.includes('originalTimestamp'));
+  t.true(firstMessageKeys.includes('sentAt'));
+  t.true(firstMessage.sentAt instanceof Date);
   t.true(callbackA.calledOnce);
   t.true(callbackB.calledOnce);
   t.true(callbackC.calledOnce);
@@ -266,7 +265,9 @@ test('flush - respond with an error', async (t) => {
     },
   ];
 
-  await t.throws(client.flush(), 'Bad Request');
+  const flushResponse = await client.flush();
+  t.true(flushResponse.error instanceof Error);
+  t.is(flushResponse.error.message, 'Bad Request');
 });
 
 test('flush - time out if configured', async (t) => {
@@ -280,7 +281,9 @@ test('flush - time out if configured', async (t) => {
     },
   ];
 
-  await t.throws(client.flush(), `network timeout at: ${host}:${port}/`);
+  const flushResponse = await client.flush();
+  t.true(flushResponse.error instanceof Error);
+  t.is(flushResponse.error.message, `network timeout at: ${host}:${port}/`);
 });
 
 test('flush - skip when client is disabled', async (t) => {

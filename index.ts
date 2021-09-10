@@ -29,6 +29,11 @@ export type AnalyticsFlushCallback = (
   data?: { batch: AnalyticsPayload[]; sentAt: Date }
 ) => void;
 
+type FlushResponse = {
+  error?: Error;
+  data: { batch: AnalyticsPayload[]; sentAt: Date };
+};
+
 type AnalyticsPayload = any;
 
 type AnalyticsEventType = 'identify' | 'track' | 'page' | 'screen' | 'group' | 'alias';
@@ -269,13 +274,13 @@ export default class Analytics {
   /**
    * Flushes the message queue to the server immediately if a flush is not already in progress.
    */
-  flush(callback: AnalyticsFlushCallback = () => {}): void {
+  async flush(callback: AnalyticsFlushCallback = () => {}): Promise<FlushResponse> {
     // check if earlier flush was pushed to queue
     this.logger.debug('in flush');
 
     if (!this.enable) {
       setImmediate(callback);
-      return;
+      return this.nullFlushResponse();
     }
 
     if (this.timer) {
@@ -287,7 +292,7 @@ export default class Analytics {
     if (!this.queue.length) {
       this.logger.debug('queue is empty, nothing to flush');
       setImmediate(callback);
-      return;
+      return this.nullFlushResponse();
     }
 
     const items = this.queue.splice(0, this.flushAt);
@@ -328,26 +333,28 @@ export default class Analytics {
       retryOn: this.isErrorRetryable.bind(this),
     };
 
-    retryableFetch(`${this.host}`, req)
-      .then((response) => {
-        if (response.ok) {
-          done();
-        } else {
-          // handle 4xx 5xx errors
-          this.logger.error(
-            'request failed to send after 3 retries, dropping ' + items.length + ' events'
-          );
-          const error = new Error(response.statusText);
-          done(error);
-        }
-      })
-      .catch((error) => {
-        // handle network errors
-        this.logger.error(
-          'request failed to send after 3 retries, dropping ' + items.length + ' events'
-        );
-        done(error);
-      });
+    try {
+      const response = await retryableFetch(`${this.host}`, req);
+      // handle success
+      if (response.ok) {
+        done();
+        return { data };
+      }
+      // handle 4xx 5xx errors
+      this.logger.error(
+        'request failed to send after 3 retries, dropping ' + items.length + ' events'
+      );
+      const error = new Error(response.statusText);
+      done(error);
+      return { error, data };
+    } catch (error) {
+      // handle network errors
+      this.logger.error(
+        'request failed to send after 3 retries, dropping ' + items.length + ' events'
+      );
+      done(error);
+      return { error, data };
+    }
   }
 
   /**
@@ -384,5 +391,14 @@ export default class Analytics {
       // Retry on 5xx status codes due to server errors
       (response.status >= 500 && response.status <= 599)
     );
+  }
+
+  private nullFlushResponse(): FlushResponse {
+    return {
+      data: {
+        batch: [],
+        sentAt: new Date(),
+      },
+    };
   }
 }

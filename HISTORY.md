@@ -16,6 +16,8 @@ Unpublished
     * All network errors are retried
 * No longer causes an exiting process to indefinitely stall due to a looping timer. If a process is naturally exiting (not due to `process.exit()`), you must call `analytics.flush()` to send the last events for them to be sent.
 * The `userId` and `anonymousId` message fields must be primitive strings. Other types like numbers are not supported.
+* `flush()` is now an async function.
+* `flush()` no longer throws upon failure but returns an error object instead.
 
 ### Minor changes
 

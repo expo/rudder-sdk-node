@@ -22,6 +22,8 @@ client.track({
   event: 'event name',
   userId: 'user id',
 });
+
+const flushResponse = await client.flush();
 ```
 
 ## Documentation
