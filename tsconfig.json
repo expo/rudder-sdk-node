@@ -8,6 +8,7 @@
       "noImplicitAny": false,
       "noImplicitReturns": true,
       "noFallthroughCasesInSwitch": true,
+      "sourceMap": true,
       "useUnknownInCatchVariables": false
     },
 }
