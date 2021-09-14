@@ -52,7 +52,8 @@ export default class Analytics {
 
   private readonly flushAt: number;
   private readonly flushInterval: number;
-  private readonly maxInternalQueueSize: number;
+  private readonly maxFlushSizeInBytes: number;
+  private readonly maxQueueLength: number;
   private flushed: boolean = false;
   private timer: NodeJS.Timer | null = null;
 
@@ -70,7 +71,8 @@ export default class Analytics {
       timeout = 0,
       flushAt = 20,
       flushInterval = 20000,
-      maxInternalQueueSize = 20000,
+      maxFlushSizeInBytes = 1024 * 1000 * 3.9, // defaults to ~3.9mb
+      maxQueueLength = 1000,
       logLevel = bunyan.FATAL,
     }: {
       enable?: boolean;
@@ -82,7 +84,8 @@ export default class Analytics {
       timeout?: number;
       flushAt?: number;
       flushInterval?: number;
-      maxInternalQueueSize?: number;
+      maxFlushSizeInBytes?: number;
+      maxQueueLength?: number;
       logLevel?: bunyan.LogLevel;
     } = {}
   ) {
@@ -97,7 +100,8 @@ export default class Analytics {
 
     this.flushAt = Math.max(flushAt, 1);
     this.flushInterval = flushInterval;
-    this.maxInternalQueueSize = maxInternalQueueSize;
+    this.maxFlushSizeInBytes = maxFlushSizeInBytes;
+    this.maxQueueLength = maxQueueLength;
 
     this.logger = bunyan.createLogger({
       name: '@expo/rudder-node-sdk',
@@ -181,7 +185,7 @@ export default class Analytics {
       looselyValidate(message, type);
     } catch (e) {
       if (e.message === 'Your message must be < 32kb.') {
-        this.logger.info(
+        this.logger.warn(
           'Your message must be < 32KiB. This is currently surfaced as a warning. Please update your code.',
           message
         );
@@ -199,14 +203,15 @@ export default class Analytics {
     message: any,
     callback: AnalyticsMessageCallback = () => {}
   ): void {
-    if (this.queue.length >= this.maxInternalQueueSize) {
-      this.logger.error(
-        `Not adding events for processing as queue size ${this.queue.length} exceeds max configuration ${this.maxInternalQueueSize}`
-      );
+    if (!this.enable) {
+      setImmediate(callback);
       return;
     }
 
-    if (!this.enable) {
+    if (this.queue.length >= this.maxQueueLength) {
+      this.logger.error(
+        `Not adding events for processing as queue size ${this.queue.length} exceeds max configuration ${this.maxQueueLength}`
+      );
       setImmediate(callback);
       return;
     }
@@ -257,10 +262,7 @@ export default class Analytics {
     }
 
     const hasReachedFlushAt = this.queue.length >= this.flushAt;
-    const hasReachedQueueSize =
-      this.queue.reduce((sum, item) => sum + JSON.stringify(item).length, 0) >=
-      this.maxInternalQueueSize;
-    if (hasReachedFlushAt || hasReachedQueueSize) {
+    if (hasReachedFlushAt) {
       this.logger.debug('flushAt reached, trying flush...');
       this.flush();
     }
@@ -295,9 +297,25 @@ export default class Analytics {
       return this.nullFlushResponse();
     }
 
-    const items = this.queue.splice(0, this.flushAt);
-    const callbacks = items.map((item) => item.callback);
-    const messages = items.map((item) => {
+    let flushSize = 0;
+    let spliceIndex = 0;
+
+    // guard against requests larger than 4mb
+    for (let i = 0; i < this.flushAt && i < this.queue.length; i++) {
+      const item = this.queue[i];
+      const itemSize = JSON.stringify(item).length;
+      const exceededMaxFlushSize = flushSize + itemSize > this.maxFlushSizeInBytes;
+      if (exceededMaxFlushSize) {
+        break;
+      }
+
+      flushSize += itemSize;
+      spliceIndex++;
+    }
+
+    const itemsToFlush = this.queue.splice(0, spliceIndex);
+    const callbacks = itemsToFlush.map((item) => item.callback);
+    const messages = itemsToFlush.map((item) => {
       // if someone mangles directly with queue
       if (typeof item.message == 'object') {
         item.message.sentAt = new Date();
@@ -309,7 +327,7 @@ export default class Analytics {
       batch: messages,
       sentAt: new Date(),
     };
-    this.logger.debug('batch size is ' + items.length);
+    this.logger.debug('batch size is ' + itemsToFlush.length);
     this.logger.trace('===data===', data);
 
     const done = (err?: Error) => {
@@ -342,7 +360,7 @@ export default class Analytics {
       }
       // handle 4xx 5xx errors
       this.logger.error(
-        'request failed to send after 3 retries, dropping ' + items.length + ' events'
+        'request failed to send after 3 retries, dropping ' + itemsToFlush.length + ' events'
       );
       const error = new Error(response.statusText);
       done(error);
@@ -350,7 +368,7 @@ export default class Analytics {
     } catch (error) {
       // handle network errors
       this.logger.error(
-        'request failed to send after 3 retries, dropping ' + items.length + ' events'
+        'request failed to send after 3 retries, dropping ' + itemsToFlush.length + ' events'
       );
       done(error);
       return { error, data };
