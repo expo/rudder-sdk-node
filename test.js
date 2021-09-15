@@ -67,6 +67,10 @@ test.before.cb((t) => {
         return setTimeout(() => res.end(), 5000);
       }
 
+      if (batch[0] && batch[0].properties && batch[0].properties.delay) {
+        return setTimeout(() => res.json(req.body), batch[0].properties.delay);
+      }
+
       res.json(req.body);
     })
     .listen(port, t.end);
@@ -83,7 +87,7 @@ test('require a write key', (t) => {
 test('create a queue', (t) => {
   const client = createClient();
 
-  t.deepEqual(client.queue, []);
+  t.deepEqual(client.messageQueue, []);
 });
 
 test('default options', (t) => {
@@ -122,9 +126,9 @@ test('enqueue - add a message to the queue', (t) => {
   const originalTimestamp = new Date();
   client.enqueue('type', { originalTimestamp }, noop);
 
-  t.is(client.queue.length, 1);
+  t.is(client.messageQueue.length, 1);
 
-  const item = client.queue.pop();
+  const item = client.messageQueue.pop();
 
   t.is(typeof item.message.messageId, 'string');
   t.regex(item.message.messageId, /node-[a-zA-Z0-9]{32}/);
@@ -158,7 +162,7 @@ test('enqueue - flush on first message', (t) => {
   t.true(client.flush.calledOnce);
 
   client.enqueue('type', {});
-  t.true(client.flush.calledOnce);
+  t.true(client.flush.calledTwice); // this will be evaluated before flush#1 resolves and the first message is removed
 
   client.enqueue('type', {});
   t.true(client.flush.calledTwice);
@@ -213,7 +217,7 @@ test('enqueue - extend context', (t) => {
     noop
   );
 
-  const actualContext = client.queue[0].message.context;
+  const actualContext = client.messageQueue[0].message.context;
   const expectedContext = { ...context, name: 'travis' };
 
   t.deepEqual(actualContext, expectedContext);
@@ -231,15 +235,15 @@ test('enqueue - skip when client is disabled', async (t) => {
   t.false(client.flush.called);
 });
 
-test('enqueue - limits the queue size to maxQueueLength', (t) => {
-  const maxQueueLength = 3;
-  const client = createClient({ maxQueueLength });
+test('enqueue - limits the queue size to maxMessageQueueLength', (t) => {
+  const maxMessageQueueLength = 3;
+  const client = createClient({ maxMessageQueueLength });
 
   for (let i = 0; i < 6; i++) {
     client.track({ userId: 'userId', event: 'event' });
   }
 
-  t.is(client.queue.length, maxQueueLength);
+  t.is(client.messageQueue.length, maxMessageQueueLength);
 });
 
 test('enqueue - allows messages > 32kb', (t) => {
@@ -269,7 +273,8 @@ test('flush - send messages', async (t) => {
 
   const flushResponse = await client.flush();
   await delay(5); // ensure the test context exists long enough for the second flush to occur
-  t.deepEqual(Object.keys(flushResponse), ['data']);
+  t.deepEqual(Object.keys(flushResponse), ['error', 'data']);
+  t.is(flushResponse.error, undefined);
   const firstMessage = flushResponse.data.batch[0];
   const firstMessageKeys = Object.keys(firstMessage);
   t.true(firstMessageKeys.includes('originalTimestamp'));
@@ -284,7 +289,7 @@ test('flush - respond with an error', async (t) => {
   const client = createClient();
   const callback = spy();
 
-  client.queue = [
+  client.messageQueue = [
     {
       message: 'error',
       callback,
@@ -300,7 +305,7 @@ test('flush - time out if configured', async (t) => {
   const client = createClient({ timeout: 500 });
   const callback = spy();
 
-  client.queue = [
+  client.messageQueue = [
     {
       message: 'timeout',
       callback,
@@ -316,7 +321,7 @@ test('flush - skip when client is disabled', async (t) => {
   const client = createClient({ enable: false });
   const callback = spy();
 
-  client.queue = [
+  client.messageQueue = [
     {
       message: 'test',
       callback,
@@ -338,7 +343,7 @@ for (const [trackCount, expectedFlushLength] of [
   const maxFlushSizeInBytes = 10 * largeText.length;
   const flushSize = trackCount * largeText.length;
 
-  test(`flush - ensures flush size - ${flushSize} - is below maxFlushSizeInBytes - ${maxFlushSizeInBytes}`, async (t) => {
+  test(`flush - ensure flush size - ${flushSize} - is below maxFlushSizeInBytes - ${maxFlushSizeInBytes}`, async (t) => {
     const client = createClient({ maxFlushSizeInBytes, flushAt: 20 });
     for (let i = 0; i < trackCount; i++) {
       client.track({
@@ -354,6 +359,54 @@ for (const [trackCount, expectedFlushLength] of [
     t.is(data.batch.length, expectedFlushLength);
   });
 }
+
+test.only('flush - enforce one in-flight flush at a time', async (t) => {
+  const flushAt = 2;
+  const messageCount = 9;
+  const expectedFlushCount = Math.round(messageCount / flushAt);
+  const client = createClient({ flushAt, flushInterval: 99999 });
+  spy(client, 'flush');
+
+  for (let i = 0; i < messageCount; i++) {
+    client.track({
+      userId: 'userId',
+      event: 'event',
+      properties: { count: i, delay: '5' },
+    });
+  }
+
+  t.is(client.flushQueue.length, expectedFlushCount - 2); // initial flush is not in queue, final flush is called below
+
+  const { data } = await client.flush();
+
+  t.is(client.flush.callCount, expectedFlushCount);
+  t.is(data.batch.length, 1);
+  t.is(data.batch[0].properties.count, 8);
+});
+
+test('flush - timer does not exist after a flush', async (t) => {
+  const client = createClient({
+    flushAt: 2,
+    flushInterval: 10,
+  });
+  spy(client, 'flush');
+
+  // flush interval
+  client.enqueue('type', {});
+  await delay(20);
+  t.is(client.timer, null);
+
+  // manual flush
+  client.enqueue('type', {});
+  await client.flush();
+  t.is(client.timer, null);
+
+  // flush at
+  client.enqueue('type', {});
+  client.enqueue('type', {});
+  await delay(5);
+  t.is(client.timer, null);
+});
 
 test('identify - enqueue a message', (t) => {
   const client = createClient();

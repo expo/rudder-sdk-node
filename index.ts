@@ -41,7 +41,9 @@ type AnalyticsEventType = 'identify' | 'track' | 'page' | 'screen' | 'group' | '
 export default class Analytics {
   private readonly enable: boolean;
 
-  private readonly queue = [] as {
+  private flushInProgress: boolean = false;
+  private readonly flushQueue: (() => Promise<FlushResponse>)[] = [];
+  private readonly messageQueue = [] as {
     message: AnalyticsPayload;
     callback: AnalyticsMessageCallback;
   }[];
@@ -53,7 +55,7 @@ export default class Analytics {
   private readonly flushAt: number;
   private readonly flushInterval: number;
   private readonly maxFlushSizeInBytes: number;
-  private readonly maxQueueLength: number;
+  private readonly maxMessageQueueLength: number;
   private flushed: boolean = false;
   private timer: NodeJS.Timer | null = null;
 
@@ -72,7 +74,7 @@ export default class Analytics {
       flushAt = 20,
       flushInterval = 20000,
       maxFlushSizeInBytes = 1024 * 1000 * 3.9, // defaults to ~3.9mb
-      maxQueueLength = 1000,
+      maxMessageQueueLength = 1000,
       logLevel = bunyan.FATAL,
     }: {
       enable?: boolean;
@@ -85,7 +87,7 @@ export default class Analytics {
       flushAt?: number;
       flushInterval?: number;
       maxFlushSizeInBytes?: number;
-      maxQueueLength?: number;
+      maxMessageQueueLength?: number;
       logLevel?: bunyan.LogLevel;
     } = {}
   ) {
@@ -101,7 +103,7 @@ export default class Analytics {
     this.flushAt = Math.max(flushAt, 1);
     this.flushInterval = flushInterval;
     this.maxFlushSizeInBytes = maxFlushSizeInBytes;
-    this.maxQueueLength = maxQueueLength;
+    this.maxMessageQueueLength = maxMessageQueueLength;
 
     this.logger = bunyan.createLogger({
       name: '@expo/rudder-node-sdk',
@@ -208,9 +210,9 @@ export default class Analytics {
       return;
     }
 
-    if (this.queue.length >= this.maxQueueLength) {
+    if (this.messageQueue.length >= this.maxMessageQueueLength) {
       this.logger.error(
-        `Not adding events for processing as queue size ${this.queue.length} exceeds max configuration ${this.maxQueueLength}`
+        `Not adding events for processing as queue size ${this.messageQueue.length} exceeds max configuration ${this.maxMessageQueueLength}`
       );
       setImmediate(callback);
       return;
@@ -250,7 +252,7 @@ export default class Analytics {
       message.messageId = `node-${md5(JSON.stringify(message))}-${uuid()}`;
     }
 
-    this.queue.push({ message, callback });
+    this.messageQueue.push({ message, callback });
 
     if (!this.flushed) {
       this.flushed = true;
@@ -258,26 +260,62 @@ export default class Analytics {
       return;
     }
 
-    const hasReachedFlushAt = this.queue.length >= this.flushAt;
-    if (hasReachedFlushAt) {
-      this.logger.debug('flushAt reached, trying flush...');
+    const isDivisibleByFlushAt = this.messageQueue.length % this.flushAt === 0;
+    if (isDivisibleByFlushAt) {
+      this.logger.debug(
+        `flushAt reached, messageQueueLength is ${this.messageQueue.length}, trying flush...`
+      );
       this.flush();
-    }
-
-    if (this.flushInterval && !this.timer) {
+    } else if (this.flushInterval && !this.timer) {
+      // only start a timer if there are dangling items in the message queue
       this.logger.debug('no existing flush timer, creating new one');
       this.timer = setTimeout(this.flush.bind(this), this.flushInterval);
     }
   }
 
   /**
-   * Flushes the message queue to the server immediately if a flush is not already in progress.
+   * Requests a flush to be executed ASAP -  if a flush is not already in progress enqueues a new flush for when the current flush is finished.
    */
   async flush(callback: AnalyticsFlushCallback = () => {}): Promise<FlushResponse> {
+    let boundFlush;
+    const promisedFlush = new Promise<FlushResponse>((resolve) => {
+      boundFlush = async () => {
+        const flushResponse = await this.executeFlush(callback);
+        resolve(flushResponse);
+      };
+    });
+    this.flushQueue.push(boundFlush);
+
+    if (this.flushInProgress) {
+      return await promisedFlush;
+    }
+    // if no flushes are in flight, start a new flush
+    this.flushInProgress = true;
+    this.processNextFlushInQueue();
+    return await promisedFlush;
+  }
+
+  /**
+   * Grabs the next flush in the flush queue and executes it.
+   */
+  private async processNextFlushInQueue(): Promise<FlushResponse> {
+    const nextBoundFlush = this.flushQueue.shift();
+    if (nextBoundFlush != null) {
+      return await nextBoundFlush();
+    }
+    return this.nullFlushResponse();
+  }
+
+  /**
+   * Flushes messages from the message queue to the server immediately. If the flush is unsuccessful, messages are not removed from the queue.
+   * When the flush has finished, this checks if any flushes are pending and executes them.
+   */
+  private async executeFlush(callback: AnalyticsFlushCallback = () => {}): Promise<FlushResponse> {
     // check if earlier flush was pushed to queue
-    this.logger.debug('in flush');
+    this.logger.debug('in flush, flushQueue length is ' + this.flushQueue.length);
 
     if (!this.enable) {
+      this.flushInProgress = false;
       setImmediate(callback);
       return this.nullFlushResponse();
     }
@@ -288,8 +326,9 @@ export default class Analytics {
       this.timer = null;
     }
 
-    if (!this.queue.length) {
+    if (!this.messageQueue.length) {
       this.logger.debug('queue is empty, nothing to flush');
+      this.flushInProgress = false;
       setImmediate(callback);
       return this.nullFlushResponse();
     }
@@ -298,8 +337,8 @@ export default class Analytics {
     let spliceIndex = 0;
 
     // guard against requests larger than 4mb
-    for (let i = 0; i < this.flushAt && i < this.queue.length; i++) {
-      const item = this.queue[i];
+    for (let i = 0; i < this.flushAt && i < this.messageQueue.length; i++) {
+      const item = this.messageQueue[i];
       const itemSize = JSON.stringify(item).length;
       const exceededMaxFlushSize = flushSize + itemSize > this.maxFlushSizeInBytes;
       if (exceededMaxFlushSize) {
@@ -310,7 +349,7 @@ export default class Analytics {
       spliceIndex++;
     }
 
-    const itemsToFlush = this.queue.splice(0, spliceIndex);
+    const itemsToFlush = this.messageQueue.slice(0, spliceIndex);
     const callbacks = itemsToFlush.map((item) => item.callback);
     const messages = itemsToFlush.map((item) => {
       // if someone mangles directly with queue
@@ -348,28 +387,38 @@ export default class Analytics {
       retryOn: this.isErrorRetryable.bind(this),
     };
 
+    let error: Error | undefined = undefined;
     try {
       const response = await retryableFetch(`${this.host}`, req);
-      // handle success
-      if (response.ok) {
-        done();
-        return { data };
+      if (!response.ok) {
+        // handle 4xx 5xx errors
+        this.logger.error(
+          'request failed to send after 3 retries, dropping ' + itemsToFlush.length + ' events'
+        );
+        error = new Error(response.statusText);
       }
-      // handle 4xx 5xx errors
-      this.logger.error(
-        'request failed to send after 3 retries, dropping ' + itemsToFlush.length + ' events'
-      );
-      const error = new Error(response.statusText);
-      done(error);
-      return { error, data };
-    } catch (error) {
+    } catch (err) {
       // handle network errors
       this.logger.error(
         'request failed to send after 3 retries, dropping ' + itemsToFlush.length + ' events'
       );
-      done(error);
-      return { error, data };
+      error = err;
     }
+
+    if (error) {
+      done(error);
+    } else {
+      this.messageQueue.splice(0, spliceIndex);
+      done();
+    }
+
+    this.flushInProgress = false;
+
+    if (this.flushQueue.length) {
+      setImmediate(this.processNextFlushInQueue.bind(this));
+    }
+
+    return { error, data };
   }
 
   /**
