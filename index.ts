@@ -117,6 +117,9 @@ export default class Analytics {
     callback?: AnalyticsMessageCallback
   ): Analytics {
     this.validate(message, 'identify');
+    if (!message.traits) {
+      message.traits = {};
+    }
     this.enqueue('identify', message, callback);
     return this;
   }
