@@ -117,9 +117,6 @@ export default class Analytics {
     callback?: AnalyticsMessageCallback
   ): Analytics {
     this.validate(message, 'identify');
-    if (!message.traits) {
-      message.traits = {};
-    }
     this.enqueue('identify', message, callback);
     return this;
   }
@@ -220,12 +217,9 @@ export default class Analytics {
     }
 
     if (type === 'identify') {
-      if (message.traits) {
-        if (!message.context) {
-          message.context = {};
-        }
-        message.context.traits = message.traits;
-      }
+      message.traits ??= {};
+      message.context ??= {};
+      message.context.traits = message.traits;
     }
 
     message = { ...message };
