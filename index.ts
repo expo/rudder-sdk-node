@@ -217,12 +217,9 @@ export default class Analytics {
     }
 
     if (type === 'identify') {
-      if (message.traits) {
-        if (!message.context) {
-          message.context = {};
-        }
-        message.context.traits = message.traits;
-      }
+      message.traits ??= {};
+      message.context ??= {};
+      message.context.traits = message.traits;
     }
 
     message = { ...message };
