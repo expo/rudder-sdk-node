@@ -67,6 +67,7 @@ export default class Analytics {
   private readonly flushInterval: number;
   private readonly maxFlushSizeInBytes: number;
   private readonly maxQueueLength: number;
+  private readonly flushCallbacks: AnalyticsFlushCallback[] = [];
   private finalMessageId: string | null = null;
   private flushed: boolean = false;
   private timer: NodeJS.Timer | null = null;
@@ -290,13 +291,16 @@ export default class Analytics {
    */
   async flush(callback: AnalyticsFlushCallback = () => {}): Promise<FlushResponse> {
     // will cause new messages to be rolled up into the in-flight flush
-    this.finalMessageId = this.queue[this.queue.length - 1]?.message?.messageId ?? null;
+    this.finalMessageId = this.queue.length
+      ? this.queue[this.queue.length - 1].message.messageId
+      : null;
+    this.flushCallbacks.push(callback);
 
     if (this.inFlightFlush) {
       return await this.inFlightFlush;
     }
 
-    this.inFlightFlush = this.executeFlush(callback);
+    this.inFlightFlush = this.executeFlush();
     return await this.inFlightFlush;
   }
 
@@ -304,18 +308,18 @@ export default class Analytics {
    * Flushes messages from the message queue to the server immediately. After the flush has finished,
    * this checks for pending flushes and executes them. All data is rolled up into a single FlushResponse.
    */
-  private async executeFlush(
-    callback: AnalyticsFlushCallback = () => {},
-    flushedItems: MessageAndCallback[] = []
-  ): Promise<FlushResponse> {
+  private async executeFlush(flushedItems: MessageAndCallback[] = []): Promise<FlushResponse> {
     // check if earlier flush was pushed to queue
     this.logger.debug('in flush');
 
     if (!this.enable) {
       this.inFlightFlush = null;
       this.finalMessageId = null;
-      setImmediate(callback);
-      return this.nullFlushResponse();
+      const { error, data } = this.nullFlushResponse();
+      this.flushCallbacks
+        .splice(0, this.flushCallbacks.length)
+        .map((callback) => setImmediate(callback, error, data));
+      return { error, data };
     }
 
     if (this.timer) {
@@ -328,20 +332,18 @@ export default class Analytics {
       this.logger.debug('queue is empty, nothing to flush');
       this.inFlightFlush = null;
       this.finalMessageId = null;
-      setImmediate(callback);
-      return this.nullFlushResponse();
+      const { error, data } = this.nullFlushResponse();
+      this.flushCallbacks
+        .splice(0, this.flushCallbacks.length)
+        .map((callback) => setImmediate(callback, error, data));
+      return { error, data };
     }
 
     let flushSize = 0;
     let spliceIndex = 0;
-    let lastSeenMessageId;
 
     // guard against requests larger than 4mb
     for (let i = 0; i < this.queue.length; i++) {
-      if (lastSeenMessageId === this.finalMessageId) {
-        break; // guard against flushing items added to the message queue during this flush
-      }
-
       const item = this.queue[i];
       const itemSize = JSON.stringify(item).length;
       const exceededMaxFlushSize = flushSize + itemSize > this.maxFlushSizeInBytes;
@@ -351,7 +353,9 @@ export default class Analytics {
 
       flushSize += itemSize;
       spliceIndex++;
-      lastSeenMessageId = item.message?.messageId ?? null;
+      if ((item.message.messageId ?? null) === this.finalMessageId) {
+        break; // guard against flushing items added to the message queue during this flush
+      }
     }
 
     const itemsToFlush = this.queue.splice(0, spliceIndex);
@@ -370,7 +374,9 @@ export default class Analytics {
       callbacks.forEach((callback_) => {
         callback_(err);
       });
-      callback(err, cumulativeData);
+      this.flushCallbacks
+        .splice(0, this.flushCallbacks.length)
+        .map((callback) => setImmediate(callback, err, cumulativeData));
     };
 
     const data = {
@@ -429,7 +435,7 @@ export default class Analytics {
       return { error, data: cumulativeData };
     }
 
-    return await this.executeFlush(callback, flushedItems.concat(itemsToFlush));
+    return await this.executeFlush(flushedItems.concat(itemsToFlush));
   }
 
   /**

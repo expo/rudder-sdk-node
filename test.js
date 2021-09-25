@@ -336,8 +336,8 @@ test('flush - skip when client is disabled', async (t) => {
 // expect a max of 9 events per flush because other properties of
 // the event -- userId, event, etc... -- push the payload above 10 * largeText.size
 for (const [trackCount, executeFlushProcessedMessageLength] of [
-  [1, [undefined]],
-  [5, [undefined]],
+  [1, []],
+  [5, []],
   [10, [undefined, 9]],
   [20, [undefined, 9, 18]],
 ]) {
@@ -361,7 +361,7 @@ for (const [trackCount, executeFlushProcessedMessageLength] of [
     t.falsy(error);
     t.is(data.batch.length, trackCount);
     for (let i = 0; i < executeFlushSpy.callCount; i++) {
-      const processedMessages = executeFlushSpy.getCall(i).args[1];
+      const processedMessages = executeFlushSpy.getCall(i).args[0];
       const processedMessageLength = processedMessages ? processedMessages.length : undefined;
       t.is(processedMessageLength, executeFlushProcessedMessageLength[i]);
     }
@@ -371,9 +371,9 @@ for (const [trackCount, executeFlushProcessedMessageLength] of [
 test('flush - enforce one in-flight flush at a time', async (t) => {
   const flushAt = 2;
   const messageCount = 9;
-  const expectedFlushCount = Math.round(messageCount / flushAt);
   const client = createClient({ flushAt, flushInterval: 99999 });
   spy(client, 'flush');
+  spy(client, 'executeFlush');
 
   for (let i = 0; i < messageCount; i++) {
     client.track({
@@ -381,13 +381,54 @@ test('flush - enforce one in-flight flush at a time', async (t) => {
       event: 'event',
       properties: { count: i, delay: '5' },
     });
+    t.is(client.flush.callCount, Math.round(i / flushAt));
   }
+  t.true(client.executeFlush.calledOnce);
 
   const { data } = await client.flush();
-
-  t.is(client.flush.callCount, expectedFlushCount);
+  t.true(client.executeFlush.calledTwice);
+  t.is(client.flush.callCount, Math.round(messageCount / flushAt));
   t.is(data.batch.length, messageCount);
   data.batch.map((item, index) => t.is(item.properties.count, index)); // sends events in order
+});
+
+test('flush - callbacks are queued, called once, then removed', async (t) => {
+  const client = createClient({ flushAt: 4 });
+
+  const callbackA = spy();
+  const callbackB = spy();
+  const callbackC = spy();
+
+  client.track({
+    userId: 'userId',
+    event: 'callback-event',
+    properties: { delay: '5' },
+  });
+  client.flush(callbackA);
+
+  client.track({
+    userId: 'userId',
+    event: 'callback-event',
+    properties: { delay: '5' },
+  });
+  await client.flush(callbackB);
+
+  client.track({
+    userId: 'userId',
+    event: 'callback-event-2',
+    properties: { delay: '5' },
+  });
+  await client.flush(callbackC);
+  await delay(5); // setImmediate causes the callbacks get executed after a delay
+
+  const callbackAArgs = callbackA.getCall(0).args;
+  t.is(callbackAArgs[0], undefined);
+  callbackAArgs[1].batch.map((item) => t.is(item.event, 'callback-event'));
+  t.true(callbackB.calledOnce);
+  const callbackCArgs = callbackC.getCall(0).args;
+  t.is(callbackCArgs[0], undefined);
+  callbackCArgs[1].batch.map((item) => t.is(item.event, 'callback-event-2'));
+  t.is(client.flushCallbacks.length, 0);
 });
 
 test('flush - timer does not exist after a flush', async (t) => {
