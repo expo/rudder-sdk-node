@@ -57,13 +57,13 @@ test.before.cb((t) => {
         });
       }
 
-      if (batch[0] === 'error') {
+      if (batch[0].command === 'error') {
         return res.status(400).json({
           error: { message: 'error' },
         });
       }
 
-      if (batch[0] === 'timeout') {
+      if (batch[0].command === 'timeout') {
         return setTimeout(() => res.end(), 5000);
       }
 
@@ -87,7 +87,7 @@ test('require a write key', (t) => {
 test('create a queue', (t) => {
   const client = createClient();
 
-  t.deepEqual(client.messageQueue, []);
+  t.deepEqual(client.queue, []);
 });
 
 test('default options', (t) => {
@@ -126,9 +126,9 @@ test('enqueue - add a message to the queue', (t) => {
   const originalTimestamp = new Date();
   client.enqueue('type', { originalTimestamp }, noop);
 
-  t.is(client.messageQueue.length, 1);
+  t.is(client.queue.length, 1);
 
-  const item = client.messageQueue.pop();
+  const item = client.queue.pop();
 
   t.is(typeof item.message.messageId, 'string');
   t.regex(item.message.messageId, /node-[a-zA-Z0-9]{32}/);
@@ -162,7 +162,7 @@ test('enqueue - flush on first message', (t) => {
   t.true(client.flush.calledOnce);
 
   client.enqueue('type', {});
-  t.true(client.flush.calledTwice); // this will be evaluated before flush#1 resolves and the first message is removed
+  t.true(client.flush.calledOnce);
 
   client.enqueue('type', {});
   t.true(client.flush.calledTwice);
@@ -217,7 +217,7 @@ test('enqueue - extend context', (t) => {
     noop
   );
 
-  const actualContext = client.messageQueue[0].message.context;
+  const actualContext = client.queue[0].message.context;
   const expectedContext = { ...context, name: 'travis' };
 
   t.deepEqual(actualContext, expectedContext);
@@ -235,15 +235,15 @@ test('enqueue - skip when client is disabled', async (t) => {
   t.false(client.flush.called);
 });
 
-test('enqueue - limits the queue size to maxMessageQueueLength', (t) => {
-  const maxMessageQueueLength = 3;
-  const client = createClient({ maxMessageQueueLength });
+test('enqueue - limits the queue size to maxQueueLength', (t) => {
+  const maxQueueLength = 3;
+  const client = createClient({ maxQueueLength });
 
   for (let i = 0; i < 6; i++) {
     client.track({ userId: 'userId', event: 'event' });
   }
 
-  t.is(client.messageQueue.length, maxMessageQueueLength);
+  t.is(client.queue.length, maxQueueLength);
 });
 
 test('enqueue - allows messages > 32kb', (t) => {
@@ -289,9 +289,9 @@ test('flush - respond with an error', async (t) => {
   const client = createClient();
   const callback = spy();
 
-  client.messageQueue = [
+  client.queue = [
     {
-      message: 'error',
+      message: { command: 'error', messageId: '123' },
       callback,
     },
   ];
@@ -305,9 +305,9 @@ test('flush - time out if configured', async (t) => {
   const client = createClient({ timeout: 500 });
   const callback = spy();
 
-  client.messageQueue = [
+  client.queue = [
     {
-      message: 'timeout',
+      message: { command: 'timeout', messageId: '123' },
       callback,
     },
   ];
@@ -321,7 +321,7 @@ test('flush - skip when client is disabled', async (t) => {
   const client = createClient({ enable: false });
   const callback = spy();
 
-  client.messageQueue = [
+  client.queue = [
     {
       message: 'test',
       callback,
@@ -333,18 +333,21 @@ test('flush - skip when client is disabled', async (t) => {
   t.false(callback.called);
 });
 
-for (const [trackCount, expectedFlushLength] of [
-  [1, 1],
-  [5, 5],
-  [10, 9] /* only expect 9 events per flush because other properties of
-          the event -- userId, event, etc... -- push the payload above 10 * largeText.size */,
-  [15, 9],
+// expect a max of 9 events per flush because other properties of
+// the event -- userId, event, etc... -- push the payload above 10 * largeText.size
+for (const [trackCount, executeFlushProcessedMessageLength] of [
+  [1, [undefined]],
+  [5, [undefined]],
+  [10, [undefined, 9]],
+  [20, [undefined, 9, 18]],
 ]) {
   const maxFlushSizeInBytes = 10 * largeText.length;
   const flushSize = trackCount * largeText.length;
 
-  test(`flush - ensure flush size - ${flushSize} - is below maxFlushSizeInBytes - ${maxFlushSizeInBytes}`, async (t) => {
-    const client = createClient({ maxFlushSizeInBytes, flushAt: 20 });
+  test(`flush - ensure queue with size of ${flushSize} is split into multiple requests smaller than the maxFlushSizeInBytes of ${maxFlushSizeInBytes}`, async (t) => {
+    const client = createClient({ maxFlushSizeInBytes, flushAt: 15 });
+    const executeFlushSpy = spy(client, 'executeFlush');
+
     for (let i = 0; i < trackCount; i++) {
       client.track({
         userId: 'userId',
@@ -356,11 +359,16 @@ for (const [trackCount, expectedFlushLength] of [
     }
     const { error, data } = await client.flush();
     t.falsy(error);
-    t.is(data.batch.length, expectedFlushLength);
+    t.is(data.batch.length, trackCount);
+    for (let i = 0; i < executeFlushSpy.callCount; i++) {
+      const processedMessages = executeFlushSpy.getCall(i).args[1];
+      const processedMessageLength = processedMessages ? processedMessages.length : undefined;
+      t.is(processedMessageLength, executeFlushProcessedMessageLength[i]);
+    }
   });
 }
 
-test.only('flush - enforce one in-flight flush at a time', async (t) => {
+test('flush - enforce one in-flight flush at a time', async (t) => {
   const flushAt = 2;
   const messageCount = 9;
   const expectedFlushCount = Math.round(messageCount / flushAt);
@@ -375,13 +383,11 @@ test.only('flush - enforce one in-flight flush at a time', async (t) => {
     });
   }
 
-  t.is(client.flushQueue.length, expectedFlushCount - 2); // initial flush is not in queue, final flush is called below
-
   const { data } = await client.flush();
 
   t.is(client.flush.callCount, expectedFlushCount);
-  t.is(data.batch.length, 1);
-  t.is(data.batch[0].properties.count, 8);
+  t.is(data.batch.length, messageCount);
+  data.batch.map((item, index) => t.is(item.properties.count, index)); // sends events in order
 });
 
 test('flush - timer does not exist after a flush', async (t) => {

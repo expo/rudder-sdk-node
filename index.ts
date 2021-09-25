@@ -34,16 +34,27 @@ type FlushResponse = {
   data: { batch: AnalyticsPayload[]; sentAt: Date };
 };
 
-type AnalyticsPayload = any;
+type AnalyticsPayload = {
+  messageId: string;
+  _metadata: any;
+  context: any;
+  type: string;
+  originalTimestamp: Date;
+  [key: string]: any;
+};
 
 type AnalyticsEventType = 'identify' | 'track' | 'page' | 'screen' | 'group' | 'alias';
+
+type MessageAndCallback = {
+  message: AnalyticsPayload;
+  callback: AnalyticsMessageCallback;
+};
 
 export default class Analytics {
   private readonly enable: boolean;
 
-  private flushInProgress: boolean = false;
-  private readonly flushQueue: (() => Promise<FlushResponse>)[] = [];
-  private readonly messageQueue = [] as {
+  private inFlightFlush: Promise<FlushResponse> | null = null;
+  private readonly queue = [] as {
     message: AnalyticsPayload;
     callback: AnalyticsMessageCallback;
   }[];
@@ -55,7 +66,8 @@ export default class Analytics {
   private readonly flushAt: number;
   private readonly flushInterval: number;
   private readonly maxFlushSizeInBytes: number;
-  private readonly maxMessageQueueLength: number;
+  private readonly maxQueueLength: number;
+  private finalMessageId: string | null = null;
   private flushed: boolean = false;
   private timer: NodeJS.Timer | null = null;
 
@@ -74,7 +86,7 @@ export default class Analytics {
       flushAt = 20,
       flushInterval = 20000,
       maxFlushSizeInBytes = 1024 * 1000 * 3.9, // defaults to ~3.9mb
-      maxMessageQueueLength = 1000,
+      maxQueueLength = 1000,
       logLevel = bunyan.FATAL,
     }: {
       enable?: boolean;
@@ -87,7 +99,7 @@ export default class Analytics {
       flushAt?: number;
       flushInterval?: number;
       maxFlushSizeInBytes?: number;
-      maxMessageQueueLength?: number;
+      maxQueueLength?: number;
       logLevel?: bunyan.LogLevel;
     } = {}
   ) {
@@ -103,7 +115,7 @@ export default class Analytics {
     this.flushAt = Math.max(flushAt, 1);
     this.flushInterval = flushInterval;
     this.maxFlushSizeInBytes = maxFlushSizeInBytes;
-    this.maxMessageQueueLength = maxMessageQueueLength;
+    this.maxQueueLength = maxQueueLength;
 
     this.logger = bunyan.createLogger({
       name: '@expo/rudder-node-sdk',
@@ -210,9 +222,9 @@ export default class Analytics {
       return;
     }
 
-    if (this.messageQueue.length >= this.maxMessageQueueLength) {
+    if (this.queue.length >= this.maxQueueLength) {
       this.logger.error(
-        `Not adding events for processing as queue size ${this.messageQueue.length} exceeds max configuration ${this.maxMessageQueueLength}`
+        `Not adding events for processing as queue size ${this.queue.length} exceeds max configuration ${this.maxQueueLength}`
       );
       setImmediate(callback);
       return;
@@ -252,7 +264,7 @@ export default class Analytics {
       message.messageId = `node-${md5(JSON.stringify(message))}-${uuid()}`;
     }
 
-    this.messageQueue.push({ message, callback });
+    this.queue.push({ message, callback });
 
     if (!this.flushed) {
       this.flushed = true;
@@ -260,10 +272,10 @@ export default class Analytics {
       return;
     }
 
-    const isDivisibleByFlushAt = this.messageQueue.length % this.flushAt === 0;
+    const isDivisibleByFlushAt = this.queue.length % this.flushAt === 0;
     if (isDivisibleByFlushAt) {
       this.logger.debug(
-        `flushAt reached, messageQueueLength is ${this.messageQueue.length}, trying flush...`
+        `flushAt reached, messageQueueLength is ${this.queue.length}, trying flush...`
       );
       this.flush();
     } else if (this.flushInterval && !this.timer) {
@@ -274,48 +286,34 @@ export default class Analytics {
   }
 
   /**
-   * Requests a flush to be executed ASAP -  if a flush is not already in progress enqueues a new flush for when the current flush is finished.
+   * Flushes the message queue to the server immediately if a flush is not already in progress.
    */
   async flush(callback: AnalyticsFlushCallback = () => {}): Promise<FlushResponse> {
-    let boundFlush;
-    const promisedFlush = new Promise<FlushResponse>((resolve) => {
-      boundFlush = async () => {
-        const flushResponse = await this.executeFlush(callback);
-        resolve(flushResponse);
-      };
-    });
-    this.flushQueue.push(boundFlush);
+    // will cause new messages to be rolled up into the in-flight flush
+    this.finalMessageId = this.queue[this.queue.length - 1]?.message?.messageId ?? null;
 
-    if (this.flushInProgress) {
-      return await promisedFlush;
+    if (this.inFlightFlush) {
+      return await this.inFlightFlush;
     }
-    // if no flushes are in flight, start a new flush
-    this.flushInProgress = true;
-    this.processNextFlushInQueue();
-    return await promisedFlush;
+
+    this.inFlightFlush = this.executeFlush(callback);
+    return await this.inFlightFlush;
   }
 
   /**
-   * Grabs the next flush in the flush queue and executes it.
+   * Flushes messages from the message queue to the server immediately. After the flush has finished,
+   * this checks for pending flushes and executes them. All data is rolled up into a single FlushResponse.
    */
-  private async processNextFlushInQueue(): Promise<FlushResponse> {
-    const nextBoundFlush = this.flushQueue.shift();
-    if (nextBoundFlush != null) {
-      return await nextBoundFlush();
-    }
-    return this.nullFlushResponse();
-  }
-
-  /**
-   * Flushes messages from the message queue to the server immediately. If the flush is unsuccessful, messages are not removed from the queue.
-   * When the flush has finished, this checks if any flushes are pending and executes them.
-   */
-  private async executeFlush(callback: AnalyticsFlushCallback = () => {}): Promise<FlushResponse> {
+  private async executeFlush(
+    callback: AnalyticsFlushCallback = () => {},
+    flushedItems: MessageAndCallback[] = []
+  ): Promise<FlushResponse> {
     // check if earlier flush was pushed to queue
-    this.logger.debug('in flush, flushQueue length is ' + this.flushQueue.length);
+    this.logger.debug('in flush');
 
     if (!this.enable) {
-      this.flushInProgress = false;
+      this.inFlightFlush = null;
+      this.finalMessageId = null;
       setImmediate(callback);
       return this.nullFlushResponse();
     }
@@ -326,19 +324,25 @@ export default class Analytics {
       this.timer = null;
     }
 
-    if (!this.messageQueue.length) {
+    if (!this.queue.length) {
       this.logger.debug('queue is empty, nothing to flush');
-      this.flushInProgress = false;
+      this.inFlightFlush = null;
+      this.finalMessageId = null;
       setImmediate(callback);
       return this.nullFlushResponse();
     }
 
     let flushSize = 0;
     let spliceIndex = 0;
+    let lastSeenMessageId;
 
     // guard against requests larger than 4mb
-    for (let i = 0; i < this.flushAt && i < this.messageQueue.length; i++) {
-      const item = this.messageQueue[i];
+    for (let i = 0; i < this.queue.length; i++) {
+      if (lastSeenMessageId === this.finalMessageId) {
+        break; // guard against flushing items added to the message queue during this flush
+      }
+
+      const item = this.queue[i];
       const itemSize = JSON.stringify(item).length;
       const exceededMaxFlushSize = flushSize + itemSize > this.maxFlushSizeInBytes;
       if (exceededMaxFlushSize) {
@@ -347,11 +351,14 @@ export default class Analytics {
 
       flushSize += itemSize;
       spliceIndex++;
+      lastSeenMessageId = item.message?.messageId ?? null;
     }
 
-    const itemsToFlush = this.messageQueue.slice(0, spliceIndex);
-    const callbacks = itemsToFlush.map((item) => item.callback);
-    const messages = itemsToFlush.map((item) => {
+    const itemsToFlush = this.queue.splice(0, spliceIndex);
+    const callbacks = itemsToFlush
+      .map((item) => item.callback)
+      .concat(flushedItems.map((item) => item.callback));
+    const currentBatchOfMessages = itemsToFlush.map((item) => {
       // if someone mangles directly with queue
       if (typeof item.message == 'object') {
         item.message.sentAt = new Date();
@@ -359,19 +366,19 @@ export default class Analytics {
       return item.message;
     });
 
-    const data = {
-      batch: messages,
-      sentAt: new Date(),
-    };
-    this.logger.debug('batch size is ' + itemsToFlush.length);
-    this.logger.trace('===data===', data);
-
     const done = (err?: Error) => {
       callbacks.forEach((callback_) => {
         callback_(err);
       });
-      callback(err, data);
+      callback(err, cumulativeData);
     };
+
+    const data = {
+      batch: currentBatchOfMessages,
+      sentAt: new Date(),
+    };
+    this.logger.debug('batch size is ' + itemsToFlush.length);
+    this.logger.trace('===data===', data);
 
     const req = {
       method: 'POST',
@@ -405,20 +412,24 @@ export default class Analytics {
       error = err;
     }
 
-    if (error) {
-      done(error);
-    } else {
-      this.messageQueue.splice(0, spliceIndex);
-      done();
+    const cumulativeData = {
+      batch: flushedItems.map((x) => x.message).concat(currentBatchOfMessages),
+      sentAt: new Date(),
+    };
+    const finishedFlushing =
+      currentBatchOfMessages[currentBatchOfMessages.length - 1].messageId === this.finalMessageId;
+    if (finishedFlushing) {
+      if (error) {
+        done(error);
+      } else {
+        done();
+      }
+      this.inFlightFlush = null;
+      this.finalMessageId = null;
+      return { error, data: cumulativeData };
     }
 
-    this.flushInProgress = false;
-
-    if (this.flushQueue.length) {
-      setImmediate(this.processNextFlushInQueue.bind(this));
-    }
-
-    return { error, data };
+    return await this.executeFlush(callback, flushedItems.concat(itemsToFlush));
   }
 
   /**
