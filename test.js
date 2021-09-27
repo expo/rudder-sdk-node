@@ -271,7 +271,7 @@ test('flush - send messages', async (t) => {
   client.page({ userId: 'id', category: 'category', name: 'b1' }, callbackB);
   client.track({ userId: 'id', event: 'c1' }, callbackC);
 
-  const flushResponse = await client.flush();
+  const [flushResponse] = await client.flush();
   await delay(5); // ensure the test context exists long enough for the second flush to occur
   t.deepEqual(Object.keys(flushResponse), ['error', 'data']);
   t.is(flushResponse.error, undefined);
@@ -296,7 +296,7 @@ test('flush - respond with an error', async (t) => {
     },
   ];
 
-  const flushResponse = await client.flush();
+  const [flushResponse] = await client.flush();
   t.true(flushResponse.error instanceof Error);
   t.is(flushResponse.error.message, 'Bad Request');
 });
@@ -312,7 +312,7 @@ test('flush - time out if configured', async (t) => {
     },
   ];
 
-  const flushResponse = await client.flush();
+  const [flushResponse] = await client.flush();
   t.true(flushResponse.error instanceof Error);
   t.is(flushResponse.error.message, `network timeout at: ${host}:${port}/`);
 });
@@ -357,9 +357,9 @@ for (const [trackCount, executeFlushProcessedMessageLength] of [
         },
       });
     }
-    const { error, data } = await client.flush();
-    t.falsy(error);
-    t.is(data.batch.length, trackCount);
+    const flushResponse = await client.flush();
+    t.true(flushResponse.every((response) => !response.error));
+    t.is(flushResponse.flatMap((response) => response.data.batch).length, trackCount);
     for (let i = 0; i < executeFlushSpy.callCount; i++) {
       const processedMessages = executeFlushSpy.getCall(i).args[0];
       const processedMessageLength = processedMessages ? processedMessages.length : undefined;
@@ -385,11 +385,13 @@ test('flush - enforce one in-flight flush at a time', async (t) => {
   }
   t.true(client.executeFlush.calledOnce);
 
-  const { data } = await client.flush();
+  const flushResponse = await client.flush();
+  t.true(client.flushResponses.length === 0);
   t.true(client.executeFlush.calledTwice);
   t.is(client.flush.callCount, Math.round(messageCount / flushAt));
-  t.is(data.batch.length, messageCount);
-  data.batch.map((item, index) => t.is(item.properties.count, index)); // sends events in order
+  const batches = flushResponse.flatMap((response) => response.data.batch);
+  t.is(batches.length, messageCount);
+  batches.map((item, index) => t.is(item.properties.count, index)); // sends events in order
 });
 
 test('flush - callbacks are queued, called once, then removed', async (t) => {
@@ -398,6 +400,8 @@ test('flush - callbacks are queued, called once, then removed', async (t) => {
   const callbackA = spy();
   const callbackB = spy();
   const callbackC = spy();
+  const callbackD = spy();
+  const callbacks = [callbackA, callbackB, callbackC, callbackD];
 
   client.track({
     userId: 'userId',
@@ -419,15 +423,22 @@ test('flush - callbacks are queued, called once, then removed', async (t) => {
     properties: { delay: '5' },
   });
   await client.flush(callbackC);
+  client.flush(callbackD);
   await delay(5); // setImmediate causes the callbacks get executed after a delay
 
-  const callbackAArgs = callbackA.getCall(0).args;
-  t.is(callbackAArgs[0], undefined);
-  callbackAArgs[1].batch.map((item) => t.is(item.event, 'callback-event'));
-  t.true(callbackB.calledOnce);
-  const callbackCArgs = callbackC.getCall(0).args;
-  t.is(callbackCArgs[0], undefined);
-  callbackCArgs[1].batch.map((item) => t.is(item.event, 'callback-event-2'));
+  callbacks.forEach((callback, i) => {
+    const args = callback.getCall(0).args[0];
+    const errors = args.flatMap((response) => response.error);
+    const events = args.flatMap((response) => response.data.batch.map((item) => item.event));
+
+    errors.map((error) => t.true(!error));
+    if (i < 2) {
+      events.map((event) => t.is(event, 'callback-event'));
+    } else {
+      events.map((event) => t.is(event, 'callback-event-2'));
+    }
+    t.true(callback.calledOnce);
+  });
   t.is(client.flushCallbacks.length, 0);
 });
 
