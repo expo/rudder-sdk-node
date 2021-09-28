@@ -1,4 +1,4 @@
-Unpublished
+v1.1.0
 ==========================
 
 ### Breaking changes
