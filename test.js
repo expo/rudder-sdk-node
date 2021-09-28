@@ -57,14 +57,18 @@ test.before.cb((t) => {
         });
       }
 
-      if (batch[0] === 'error') {
+      if (batch[0].command === 'error') {
         return res.status(400).json({
           error: { message: 'error' },
         });
       }
 
-      if (batch[0] === 'timeout') {
+      if (batch[0].command === 'timeout') {
         return setTimeout(() => res.end(), 5000);
+      }
+
+      if (batch[0] && batch[0].properties && batch[0].properties.delay) {
+        return setTimeout(() => res.json(req.body), batch[0].properties.delay);
       }
 
       res.json(req.body);
@@ -267,9 +271,10 @@ test('flush - send messages', async (t) => {
   client.page({ userId: 'id', category: 'category', name: 'b1' }, callbackB);
   client.track({ userId: 'id', event: 'c1' }, callbackC);
 
-  const flushResponse = await client.flush();
+  const [flushResponse] = await client.flush();
   await delay(5); // ensure the test context exists long enough for the second flush to occur
-  t.deepEqual(Object.keys(flushResponse), ['data']);
+  t.deepEqual(Object.keys(flushResponse), ['error', 'data']);
+  t.is(flushResponse.error, undefined);
   const firstMessage = flushResponse.data.batch[0];
   const firstMessageKeys = Object.keys(firstMessage);
   t.true(firstMessageKeys.includes('originalTimestamp'));
@@ -286,12 +291,12 @@ test('flush - respond with an error', async (t) => {
 
   client.queue = [
     {
-      message: 'error',
+      message: { command: 'error', messageId: '123' },
       callback,
     },
   ];
 
-  const flushResponse = await client.flush();
+  const [flushResponse] = await client.flush();
   t.true(flushResponse.error instanceof Error);
   t.is(flushResponse.error.message, 'Bad Request');
 });
@@ -302,12 +307,12 @@ test('flush - time out if configured', async (t) => {
 
   client.queue = [
     {
-      message: 'timeout',
+      message: { command: 'timeout', messageId: '123' },
       callback,
     },
   ];
 
-  const flushResponse = await client.flush();
+  const [flushResponse] = await client.flush();
   t.true(flushResponse.error instanceof Error);
   t.is(flushResponse.error.message, `network timeout at: ${host}:${port}/`);
 });
@@ -328,18 +333,21 @@ test('flush - skip when client is disabled', async (t) => {
   t.false(callback.called);
 });
 
-for (const [trackCount, expectedFlushLength] of [
-  [1, 1],
-  [5, 5],
-  [10, 9] /* only expect 9 events per flush because other properties of
-          the event -- userId, event, etc... -- push the payload above 10 * largeText.size */,
-  [15, 9],
+// expect a max of 9 events per flush because other properties of
+// the event -- userId, event, etc... -- push the payload above 10 * largeText.size
+for (const [trackCount, executeFlushProcessedMessageLength] of [
+  [1, []],
+  [5, []],
+  [10, [undefined, 9]],
+  [20, [undefined, 9, 18]],
 ]) {
   const maxFlushSizeInBytes = 10 * largeText.length;
   const flushSize = trackCount * largeText.length;
 
-  test(`flush - ensures flush size - ${flushSize} - is below maxFlushSizeInBytes - ${maxFlushSizeInBytes}`, async (t) => {
-    const client = createClient({ maxFlushSizeInBytes, flushAt: 20 });
+  test(`flush - ensure queue with size of ${flushSize} is split into multiple requests smaller than the maxFlushSizeInBytes of ${maxFlushSizeInBytes}`, async (t) => {
+    const client = createClient({ maxFlushSizeInBytes, flushAt: 15 });
+    const executeFlushSpy = spy(client, 'executeFlush');
+
     for (let i = 0; i < trackCount; i++) {
       client.track({
         userId: 'userId',
@@ -349,11 +357,114 @@ for (const [trackCount, expectedFlushLength] of [
         },
       });
     }
-    const { error, data } = await client.flush();
-    t.falsy(error);
-    t.is(data.batch.length, expectedFlushLength);
+    const flushResponse = await client.flush();
+    t.true(flushResponse.every((response) => !response.error));
+    t.is(flushResponse.flatMap((response) => response.data.batch).length, trackCount);
+    for (let i = 0; i < executeFlushSpy.callCount; i++) {
+      const processedMessages = executeFlushSpy.getCall(i).args[0];
+      const processedMessageLength = processedMessages ? processedMessages.length : undefined;
+      t.is(processedMessageLength, executeFlushProcessedMessageLength[i]);
+    }
   });
 }
+
+test('flush - enforce one in-flight flush at a time', async (t) => {
+  const flushAt = 2;
+  const messageCount = 9;
+  const client = createClient({ flushAt, flushInterval: 99999 });
+  spy(client, 'flush');
+  spy(client, 'executeFlush');
+
+  for (let i = 0; i < messageCount; i++) {
+    client.track({
+      userId: 'userId',
+      event: 'event',
+      properties: { count: i, delay: '5' },
+    });
+    t.is(client.flush.callCount, Math.round(i / flushAt));
+  }
+  t.true(client.executeFlush.calledOnce);
+
+  const flushResponse = await client.flush();
+  t.true(client.flushResponses.length === 0);
+  t.true(client.executeFlush.calledTwice);
+  t.is(client.flush.callCount, Math.round(messageCount / flushAt));
+  const batches = flushResponse.flatMap((response) => response.data.batch);
+  t.is(batches.length, messageCount);
+  batches.map((item, index) => t.is(item.properties.count, index)); // sends events in order
+});
+
+test('flush - callbacks are queued, called once, then removed', async (t) => {
+  const client = createClient({ flushAt: 4 });
+
+  const callbackA = spy();
+  const callbackB = spy();
+  const callbackC = spy();
+  const callbackD = spy();
+  const callbacks = [callbackA, callbackB, callbackC, callbackD];
+
+  client.track({
+    userId: 'userId',
+    event: 'callback-event',
+    properties: { delay: '5' },
+  });
+  client.flush(callbackA);
+
+  client.track({
+    userId: 'userId',
+    event: 'callback-event',
+    properties: { delay: '5' },
+  });
+  await client.flush(callbackB);
+
+  client.track({
+    userId: 'userId',
+    event: 'callback-event-2',
+    properties: { delay: '5' },
+  });
+  await client.flush(callbackC);
+  client.flush(callbackD);
+  await delay(5); // setImmediate causes the callbacks get executed after a delay
+
+  callbacks.forEach((callback, i) => {
+    const args = callback.getCall(0).args[0];
+    const errors = args.flatMap((response) => response.error);
+    const events = args.flatMap((response) => response.data.batch.map((item) => item.event));
+
+    errors.map((error) => t.true(!error));
+    if (i < 2) {
+      events.map((event) => t.is(event, 'callback-event'));
+    } else {
+      events.map((event) => t.is(event, 'callback-event-2'));
+    }
+    t.true(callback.calledOnce);
+  });
+  t.is(client.flushCallbacks.length, 0);
+});
+
+test('flush - timer does not exist after a flush', async (t) => {
+  const client = createClient({
+    flushAt: 2,
+    flushInterval: 10,
+  });
+  spy(client, 'flush');
+
+  // flush interval
+  client.enqueue('type', {});
+  await delay(20);
+  t.is(client.timer, null);
+
+  // manual flush
+  client.enqueue('type', {});
+  await client.flush();
+  t.is(client.timer, null);
+
+  // flush at
+  client.enqueue('type', {});
+  client.enqueue('type', {});
+  await delay(5);
+  t.is(client.timer, null);
+});
 
 test('identify - enqueue a message', (t) => {
   const client = createClient();
