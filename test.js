@@ -466,6 +466,45 @@ test('flush - timer does not exist after a flush', async (t) => {
   t.is(client.timer, null);
 });
 
+test('flush - after returning a nullResponse, subsequent flushes send fresh events', async (t) => {
+  const expectedBatchLengths = [0, 1, 5];
+  const client = createClient({
+    flushAt: 20,
+    flushInterval: 10000,
+  });
+  client.flushed = true;
+  const nullResponseSpy = spy(client, 'nullFlushResponse');
+
+  const nullFlushResponse = await client.flush();
+  t.is(nullFlushResponse[0].data.batch.length, expectedBatchLengths[0]);
+  t.true(nullResponseSpy.calledOnce);
+
+  for (let i = 0; i < expectedBatchLengths[1]; i++) {
+    client.track({
+      userId: 'userId',
+      event: 'some-event',
+    });
+  }
+
+  const flushResponse1 = await client.flush();
+  t.is(flushResponse1[0].data.batch.length, expectedBatchLengths[1]);
+
+  for (let i = 0; i < expectedBatchLengths[2]; i++) {
+    client.track({
+      userId: 'userId',
+      event: 'some-event',
+    });
+  }
+
+  const flushResponse2 = await client.flush();
+  t.is(flushResponse2[0].data.batch.length, expectedBatchLengths[2]);
+
+  t.true(nullResponseSpy.calledOnce);
+  t.is(nullResponseSpy.firstCall.returnValue, nullFlushResponse);
+  t.not(nullResponseSpy.firstCall.returnValue, flushResponse1);
+  t.not(nullResponseSpy.firstCall.returnValue, flushResponse2);
+});
+
 test('identify - enqueue a message', (t) => {
   const client = createClient();
   stub(client, 'enqueue');

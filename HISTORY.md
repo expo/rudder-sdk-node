@@ -1,3 +1,11 @@
+unpublished
+==========================
+### Minor changes
+- adds some more verbose logging for future debugging
+
+### Bug Fixes
+- fixed an issue where returning a `nullResponse` from a flush resulted in future flushes returning that `nullResponse`.
+
 v1.1.0
 ==========================
 
