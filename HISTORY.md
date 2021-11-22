@@ -1,4 +1,4 @@
-unpublished
+v1.1.1
 ==========================
 ### Minor changes
 - adds some more verbose logging for future debugging
