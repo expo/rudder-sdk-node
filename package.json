@@ -33,7 +33,10 @@
     "cli.js",
     "index.d.ts",
     "index.js",
-    "index.js.map"
+    "index.js.map",
+    "flushDetached.d.ts",
+    "flushDetached.js",
+    "flushDetached.js.map"
   ],
   "keywords": [
     "analytics"

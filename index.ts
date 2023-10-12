@@ -1,9 +1,13 @@
 import bunyan from '@expo/bunyan';
 import looselyValidate from '@segment/loosely-validate-event';
 import assert from 'assert';
+import cp from 'child_process';
 import fetchRetry from 'fetch-retry';
+import fs from 'fs';
 import md5 from 'md5';
 import fetch, { Response } from 'node-fetch';
+import os from 'os';
+import path from 'path';
 import removeTrailingSlash from 'remove-trailing-slash';
 import { v4 as uuid } from 'uuid';
 
@@ -31,7 +35,7 @@ type FlushResponse = {
   data: { batch: AnalyticsPayload[]; sentAt: Date };
 };
 
-type AnalyticsPayload = {
+export type AnalyticsPayload = {
   messageId: string;
   _metadata: any;
   context: any;
@@ -62,6 +66,7 @@ export default class Analytics {
 
   private readonly flushAt: number;
   private readonly flushInterval: number;
+  private readonly flushDetached: boolean;
   private readonly maxFlushSizeInBytes: number;
   private readonly maxQueueLength: number;
   private readonly flushCallbacks: AnalyticsFlushCallback[] = [];
@@ -84,6 +89,7 @@ export default class Analytics {
       timeout = 0,
       flushAt = 20,
       flushInterval = 20000,
+      flushDetached = false,
       maxFlushSizeInBytes = 1024 * 1000 * 3.9, // defaults to ~3.9mb
       maxQueueLength = 1000,
       logLevel = bunyan.FATAL,
@@ -97,6 +103,7 @@ export default class Analytics {
       timeout?: number;
       flushAt?: number;
       flushInterval?: number;
+      flushDetached?: boolean;
       maxFlushSizeInBytes?: number;
       maxQueueLength?: number;
       logLevel?: bunyan.LogLevel;
@@ -113,6 +120,7 @@ export default class Analytics {
 
     this.flushAt = Math.max(flushAt, 1);
     this.flushInterval = flushInterval;
+    this.flushDetached = flushDetached;
     this.maxFlushSizeInBytes = maxFlushSizeInBytes;
     this.maxQueueLength = maxQueueLength;
 
@@ -221,7 +229,7 @@ export default class Analytics {
       return;
     }
 
-    if (this.queue.length >= this.maxQueueLength) {
+    if (!this.flushDetached && this.queue.length >= this.maxQueueLength) {
       this.logger.error(
         `Not adding events for processing as queue size ${this.queue.length} exceeds max configuration ${this.maxQueueLength}`
       );
@@ -263,7 +271,14 @@ export default class Analytics {
       message.messageId = `node-${md5(JSON.stringify(message))}-${uuid()}`;
     }
 
-    this.queue.push({ message, callback });
+    if (this.flushDetached) {
+      // Do not add the callback when in detached mode
+      this.queue.push({ message, callback: () => {} });
+      this.logger.debug('Event is queued and will be flushed in a detached process');
+      return;
+    } else {
+      this.queue.push({ message, callback });
+    }
 
     if (!this.flushed) {
       this.flushed = true;
@@ -290,6 +305,11 @@ export default class Analytics {
   async flush(callback: AnalyticsFlushCallback = () => {}): Promise<FlushResponse[]> {
     this.logger.debug('in flush');
 
+    if (this.flushDetached) {
+      this.executeDetachedFlush();
+      return [];
+    }
+
     // will cause new messages to be rolled up into the in-flight flush
     this.finalMessageId = this.queue.length
       ? this.queue[this.queue.length - 1].message.messageId
@@ -309,6 +329,51 @@ export default class Analytics {
     this.finalMessageId = null;
     this.logger.trace('===flushResponse===', flushResponse);
     return flushResponse;
+  }
+
+  /**
+   * Flushes messages from the message queue inside a separate and detached process.
+   * This is useful for CLIs to not block the main process, but still flush all messages as expected.
+   * It works by writing all queued events to a serialized file, and starting a new process that loads and executes them.
+   * Note, message callbacks are never resolved when running in detached mode.
+   */
+  private executeDetachedFlush(): void {
+    this.logger.debug('in execute detached flush');
+
+    if (!this.enable) {
+      this.logger.debug('client not enabled, skipping flush');
+      this.flushResponses.splice(0, this.flushResponses.length);
+      return;
+    }
+
+    if (!this.queue.length) {
+      return this.logger.debug('no events queued, skipping flush');
+    }
+
+    // Create a temporary file to store the events
+    const eventsFile = path.join(os.tmpdir(), `rudder-node-sdk-events-${Date.now()}.json`);
+    // Serialize options and message data without callbacks
+    const events = JSON.stringify({
+      queue: this.queue.map((item) => ({ message: item.message })),
+      config: {
+        writeKey: this.writeKey,
+        dataPlaneURL: this.host,
+        flushAt: this.flushAt,
+        flushInterval: this.flushInterval,
+        maxFlushSizeInBytes: this.maxFlushSizeInBytes,
+        maxQueueLength: this.maxQueueLength,
+      },
+    });
+
+    fs.mkdirSync(path.dirname(eventsFile), { recursive: true });
+    fs.writeFileSync(eventsFile, events);
+
+    // Start a new process to flush the events
+    cp.spawn(process.execPath, [path.resolve(__dirname, 'flushDetached.js'), eventsFile], {
+      detached: true,
+      windowsHide: true,
+      shell: false,
+    });
   }
 
   /**

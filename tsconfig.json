@@ -1,5 +1,5 @@
 {
-    "include": ["index.ts"],
+    "include": ["index.ts", "flushDetached.ts"],
     "extends": "@tsconfig/node12/tsconfig.json",
     "compilerOptions": {
       "declaration": true,
