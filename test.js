@@ -214,7 +214,7 @@ test('enqueue - extend context', (t) => {
       event: 'test',
       context: { name: 'travis' },
     },
-    noop
+    noop,
   );
 
   const actualContext = client.queue[0].message.context;
@@ -314,7 +314,7 @@ test('flush - time out if configured', async (t) => {
 
   const [flushResponse] = await client.flush();
   t.true(flushResponse.error instanceof Error);
-  t.is(flushResponse.error.message, `network timeout at: ${host}:${port}/`);
+  t.is(flushResponse.error.message, `The operation was aborted due to timeout`);
 });
 
 test('flush - skip when client is disabled', async (t) => {

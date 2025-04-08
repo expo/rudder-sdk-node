@@ -1,6 +1,7 @@
 {
   "clearMocks": true,
   "collectCoverage": true,
+  "testMatch": ["**/__tests__/**/*-test.ts"],
   "coverageDirectory": "<rootDir>/coverage",
   "globals": {
     "ts-jest": {
