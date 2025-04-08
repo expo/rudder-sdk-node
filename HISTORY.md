@@ -1,3 +1,8 @@
+v2.0.0
+==========================
+### Major changes
+- use builtin fetch, require node >=20
+
 v1.1.1
 ==========================
 ### Minor changes
@@ -37,7 +42,7 @@ v1.1.0
 
 ### Minor changes
 
-* Convert from JavaScript to TypeScript. First-class type 
+* Convert from JavaScript to TypeScript. First-class type
 * Replaced `axios` with `node-fetch`
 * The library name in the log context object is now `@expo/rudder-sdk-node`
 * The user agent string is now `expo-rudder-sdk-node/<version>`

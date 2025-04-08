@@ -3,14 +3,16 @@ import looselyValidate from '@segment/loosely-validate-event';
 import assert from 'assert';
 import fetchRetry from 'fetch-retry';
 import md5 from 'md5';
-import fetch, { Response } from 'node-fetch';
-import removeTrailingSlash from 'remove-trailing-slash';
 import { v4 as uuid } from 'uuid';
 
 const version = require('./package.json').version;
 
-const retryableFetch = fetchRetry(fetch as any) as unknown as typeof fetch;
+const retryableFetch = fetchRetry(fetch);
 const setImmediate = global.setImmediate || process.nextTick.bind(process);
+
+function removeTrailingSlash(str: string) {
+  return str.replace(/\/+$/, '');
+}
 
 export type AnalyticsMessage = AnalyticsIdentity & {
   context?: { [key: string]: unknown };
@@ -68,7 +70,7 @@ export default class Analytics {
   private readonly flushResponses: FlushResponse[] = [];
   private finalMessageId: string | null = null;
   private flushed: boolean = false;
-  private timer: NodeJS.Timer | null = null;
+  private timer: NodeJS.Timeout | null = null;
 
   private readonly logger: bunyan;
 
@@ -100,7 +102,7 @@ export default class Analytics {
       maxFlushSizeInBytes?: number;
       maxQueueLength?: number;
       logLevel?: bunyan.LogLevel;
-    } = {}
+    } = {},
   ) {
     this.enable = enable;
 
@@ -127,7 +129,7 @@ export default class Analytics {
    */
   identify(
     message: AnalyticsMessage & { traits?: { [key: string]: unknown } },
-    callback?: AnalyticsMessageCallback
+    callback?: AnalyticsMessageCallback,
   ): Analytics {
     this.validate(message, 'identify');
     this.enqueue('identify', message, callback);
@@ -140,7 +142,7 @@ export default class Analytics {
    */
   group(
     message: AnalyticsMessage & { groupId: string; traits?: { [key: string]: unknown } },
-    callback?: AnalyticsMessageCallback
+    callback?: AnalyticsMessageCallback,
   ): Analytics {
     this.validate(message, 'group');
     this.enqueue('group', message, callback);
@@ -152,7 +154,7 @@ export default class Analytics {
    */
   track(
     message: AnalyticsMessage & { event: string },
-    callback?: AnalyticsMessageCallback
+    callback?: AnalyticsMessageCallback,
   ): Analytics {
     this.validate(message, 'track');
     this.enqueue('track', message, callback);
@@ -164,7 +166,7 @@ export default class Analytics {
    */
   page(
     message: AnalyticsMessage & { name: string },
-    callback?: AnalyticsMessageCallback
+    callback?: AnalyticsMessageCallback,
   ): Analytics {
     this.validate(message, 'page');
     this.enqueue('page', message, callback);
@@ -186,7 +188,7 @@ export default class Analytics {
    */
   alias(
     message: { previousId: string; traits?: { [key: string]: unknown } } & AnalyticsIdentity,
-    callback?: AnalyticsMessageCallback
+    callback?: AnalyticsMessageCallback,
   ): Analytics {
     this.validate(message, 'alias');
     this.enqueue('alias', message, callback);
@@ -200,7 +202,7 @@ export default class Analytics {
       if (e.message === 'Your message must be < 32kb.') {
         this.logger.warn(
           'Your message must be < 32KiB. This is currently surfaced as a warning. Please update your code.',
-          message
+          message,
         );
         return;
       }
@@ -214,7 +216,7 @@ export default class Analytics {
   private enqueue(
     type: AnalyticsEventType,
     message: any,
-    callback: AnalyticsMessageCallback = () => {}
+    callback: AnalyticsMessageCallback = () => {},
   ): void {
     if (!this.enable) {
       setImmediate(callback);
@@ -223,7 +225,7 @@ export default class Analytics {
 
     if (this.queue.length >= this.maxQueueLength) {
       this.logger.error(
-        `Not adding events for processing as queue size ${this.queue.length} exceeds max configuration ${this.maxQueueLength}`
+        `Not adding events for processing as queue size ${this.queue.length} exceeds max configuration ${this.maxQueueLength}`,
       );
       setImmediate(callback);
       return;
@@ -274,7 +276,7 @@ export default class Analytics {
     const isDivisibleByFlushAt = this.queue.length % this.flushAt === 0;
     if (isDivisibleByFlushAt) {
       this.logger.debug(
-        `flushAt reached, messageQueueLength is ${this.queue.length}, trying flush...`
+        `flushAt reached, messageQueueLength is ${this.queue.length}, trying flush...`,
       );
       this.flush();
     } else if (this.flushInterval && !this.timer) {
@@ -389,34 +391,32 @@ export default class Analytics {
     this.logger.debug('batch size is ' + itemsToFlush.length);
     this.logger.trace('===data===', data);
 
-    const req = {
-      method: 'POST',
-      headers: {
-        accept: 'application/json, text/plain, */*',
-        'content-type': 'application/json;charset=utf-8',
-        'user-agent': `expo-rudder-sdk-node/${version}`,
-        authorization: 'Basic ' + Buffer.from(`${this.writeKey}:`).toString('base64'),
-      },
-      body: JSON.stringify(data),
-      timeout: this.timeout > 0 ? this.timeout : undefined,
-      retryDelay: this.getExponentialDelay.bind(this),
-      retryOn: this.isErrorRetryable.bind(this),
-    };
-
     let error: Error | undefined = undefined;
     try {
-      const response = await retryableFetch(`${this.host}`, req);
+      const response = await retryableFetch(`${this.host}`, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json, text/plain, */*',
+          'content-type': 'application/json;charset=utf-8',
+          'user-agent': `expo-rudder-sdk-node/${version}`,
+          authorization: 'Basic ' + Buffer.from(`${this.writeKey}:`).toString('base64'),
+        },
+        body: JSON.stringify(data),
+        signal: this.timeout > 0 ? AbortSignal.timeout(this.timeout) : undefined,
+        retryDelay: this.getExponentialDelay.bind(this),
+        retryOn: this.isErrorRetryable.bind(this),
+      });
       if (!response.ok) {
         // handle 4xx 5xx errors
         this.logger.error(
-          'request failed to send after 3 retries, dropping ' + itemsToFlush.length + ' events'
+          'request failed to send after 3 retries, dropping ' + itemsToFlush.length + ' events',
         );
         error = new Error(response.statusText);
       }
     } catch (err) {
       // handle network errors
       this.logger.error(
-        'request failed to send after 3 retries, dropping ' + itemsToFlush.length + ' events'
+        'request failed to send after 3 retries, dropping ' + itemsToFlush.length + ' events',
       );
       error = err;
     }
@@ -460,7 +460,7 @@ export default class Analytics {
   private isErrorRetryable(
     priorRetryCount: number,
     error: Error | null,
-    response: Response
+    response: Response | null,
   ): boolean {
     // 3 retries max
     if (priorRetryCount > 2) {
@@ -471,9 +471,9 @@ export default class Analytics {
       // Retry on any network error
       !!error ||
       // Retry if rate limited
-      response.status === 429 ||
+      response!.status === 429 ||
       // Retry on 5xx status codes due to server errors
-      (response.status >= 500 && response.status <= 599)
+      (response!.status >= 500 && response!.status <= 599)
     );
   }
 

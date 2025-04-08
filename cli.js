@@ -20,7 +20,7 @@ program
   .option(
     '-i, --integrations <integrations>',
     'additional integrations for the event (JSON-encoded)',
-    toObject
+    toObject,
   )
 
   .option('-e, --event <event>', 'the event name to send with the event')
